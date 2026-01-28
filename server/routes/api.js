@@ -658,6 +658,13 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
     let imported = 0;
     let skipped = 0;
     const errors = [];
+    const skippedReasons = {
+      noToken: 0,
+      zeroUnits: 0,
+      invalidUnits: 0,
+      other: 0
+    };
+    const skippedRows = []; // Track first few skipped rows for debugging
 
     // Process each row
     const insertMany = db.transaction((rows) => {
@@ -672,9 +679,13 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
           const total = getColumnValue(row, 'Total Bot', 'Total', 'total', 'TOTAL BOT', 'TOTAL', 'Amount', 'amount', 'TotalBot');
           const type = getColumnValue(row, 'Buy/Sell/Income', 'Type', 'type', 'TYPE', 'Side', 'side', 'Action', 'action');
 
-          // Skip if no token
-          if (!token) {
+          // Skip if no token (likely empty row)
+          if (!token || String(token).trim() === '') {
             skipped++;
+            skippedReasons.noToken++;
+            if (skippedRows.length < 20) {
+              skippedRows.push({ row: i + 2, reason: 'No token', data: JSON.stringify(row).substring(0, 100) });
+            }
             continue;
           }
 
@@ -684,9 +695,23 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
           let parsedAvgPrice = avgPrice ? parseFloat(String(avgPrice).replace(/[$,]/g, '')) : null;
           let parsedTotal = total ? parseFloat(String(total).replace(/[$,]/g, '')) : null;
 
-          // Skip if units is invalid or zero
-          if (isNaN(parsedUnits) || parsedUnits === 0) {
+          // Skip if units is invalid (NaN) - but allow zero if it might be a valid entry
+          if (isNaN(parsedUnits)) {
             skipped++;
+            skippedReasons.invalidUnits++;
+            if (skippedRows.length < 20) {
+              skippedRows.push({ row: i + 2, reason: 'Invalid units: ' + units, token: token });
+            }
+            continue;
+          }
+
+          // Skip if units is exactly zero AND no total value
+          if (parsedUnits === 0 && (!parsedTotal || parsedTotal === 0)) {
+            skipped++;
+            skippedReasons.zeroUnits++;
+            if (skippedRows.length < 20) {
+              skippedRows.push({ row: i + 2, reason: 'Zero units with no total', token: token });
+            }
             continue;
           }
 
@@ -721,12 +746,18 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
     insertMany(rawData);
 
     console.log('Import complete - Imported:', imported, 'Skipped:', skipped);
+    console.log('Skip reasons:', skippedReasons);
+    if (skippedRows.length > 0) {
+      console.log('Sample skipped rows:', skippedRows);
+    }
 
     res.json({
       success: true,
       imported,
       skipped,
       total: rawData.length,
+      skippedReasons,
+      skippedRows: skippedRows.slice(0, 20),
       errors: errors.slice(0, 10) // Return first 10 errors only
     });
   } catch (error) {

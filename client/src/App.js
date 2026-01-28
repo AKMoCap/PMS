@@ -1697,6 +1697,33 @@ function UploadTab({ onRefresh }) {
                       {result.message}
                     </p>
                   )}
+                  {result.skippedReasons && result.skipped > 0 && (
+                    <div style={{ marginTop: '8px', padding: '8px', background: 'rgba(255, 165, 0, 0.1)', borderRadius: '4px' }}>
+                      <p style={{ fontSize: '12px', color: 'var(--warning)', marginBottom: '4px' }}>Skip reasons:</p>
+                      {result.skippedReasons.noToken > 0 && (
+                        <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>- Empty/no token: {result.skippedReasons.noToken} rows</p>
+                      )}
+                      {result.skippedReasons.zeroUnits > 0 && (
+                        <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>- Zero units: {result.skippedReasons.zeroUnits} rows</p>
+                      )}
+                      {result.skippedReasons.invalidUnits > 0 && (
+                        <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>- Invalid units: {result.skippedReasons.invalidUnits} rows</p>
+                      )}
+                      {result.skippedReasons.other > 0 && (
+                        <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>- Other: {result.skippedReasons.other} rows</p>
+                      )}
+                    </div>
+                  )}
+                  {result.skippedRows && result.skippedRows.length > 0 && (
+                    <div style={{ marginTop: '8px' }}>
+                      <p style={{ fontSize: '12px', color: 'var(--warning)' }}>Sample skipped rows:</p>
+                      {result.skippedRows.slice(0, 10).map((row, i) => (
+                        <p key={i} style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                          Row {row.row}: {row.reason} {row.token ? `(Token: ${row.token})` : ''}
+                        </p>
+                      ))}
+                    </div>
+                  )}
                   {result.errors && result.errors.length > 0 && (
                     <div style={{ marginTop: '8px' }}>
                       <p style={{ fontSize: '12px', color: 'var(--warning)' }}>Errors:</p>
