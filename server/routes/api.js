@@ -905,4 +905,114 @@ router.get('/upload/stats', (req, res) => {
   }
 });
 
+// =====================
+// CHECKER/DEBUG ENDPOINTS
+// =====================
+
+// Get detailed breakdown of portfolio calculations
+router.get('/checker/portfolio', (req, res) => {
+  try {
+    const db = getDb();
+
+    // Get detailed holdings with buy/sell/income breakdown
+    const holdings = db.prepare(`
+      SELECT
+        token,
+        SUM(CASE WHEN type = 'Buy' THEN units ELSE 0 END) as buy_units,
+        SUM(CASE WHEN type = 'Sell' THEN units ELSE 0 END) as sell_units,
+        SUM(CASE WHEN type = 'Income' THEN units ELSE 0 END) as income_units,
+        SUM(CASE WHEN type = 'Buy' THEN units WHEN type = 'Sell' THEN -units WHEN type = 'Income' THEN units ELSE 0 END) as net_units,
+        SUM(CASE WHEN type = 'Buy' THEN total ELSE 0 END) as buy_total,
+        SUM(CASE WHEN type = 'Sell' THEN total ELSE 0 END) as sell_total,
+        SUM(CASE WHEN type = 'Buy' THEN total WHEN type = 'Sell' THEN -total ELSE 0 END) as cost_basis,
+        COUNT(*) as trade_count
+      FROM trades
+      GROUP BY token
+      ORDER BY token
+    `).all();
+
+    // Get investor totals
+    const investors = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN type = 'GP' THEN amount ELSE 0 END), 0) as gp_total,
+        COALESCE(SUM(CASE WHEN type = 'LP' THEN amount ELSE 0 END), 0) as lp_total,
+        COALESCE(SUM(amount), 0) as total_subscriptions
+      FROM investors
+    `).get();
+
+    // Get expenses
+    const expenses = db.prepare(`
+      SELECT
+        COALESCE(SUM(fund_expenses), 0) as fund_expenses,
+        COALESCE(SUM(mgmt_fees), 0) as mgmt_fees,
+        COALESCE(SUM(setup_costs), 0) as setup_costs
+      FROM perf_tracker
+    `).get();
+
+    const totalExpenses = (expenses.fund_expenses || 0) + (expenses.mgmt_fees || 0) + (expenses.setup_costs || 0);
+
+    // Calculate total cost basis (excluding USDC)
+    const totalCostBasis = holdings
+      .filter(h => h.token.toUpperCase() !== 'USDC')
+      .reduce((sum, h) => sum + (h.cost_basis || 0), 0);
+
+    // USDC calculation
+    const usdcBalance = (investors.total_subscriptions || 0) - totalCostBasis - totalExpenses;
+
+    res.json({
+      holdings,
+      investors,
+      expenses: {
+        fund_expenses: expenses.fund_expenses || 0,
+        mgmt_fees: expenses.mgmt_fees || 0,
+        setup_costs: expenses.setup_costs || 0,
+        total: totalExpenses
+      },
+      calculations: {
+        total_subscriptions: investors.total_subscriptions || 0,
+        total_cost_basis: totalCostBasis,
+        total_expenses: totalExpenses,
+        usdc_balance: usdcBalance
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get trades for a specific token
+router.get('/checker/token/:token', (req, res) => {
+  try {
+    const db = getDb();
+    const token = req.params.token.toUpperCase();
+
+    const trades = db.prepare(`
+      SELECT * FROM trades
+      WHERE UPPER(token) = ?
+      ORDER BY date ASC, id ASC
+    `).all(token);
+
+    const summary = db.prepare(`
+      SELECT
+        SUM(CASE WHEN type = 'Buy' THEN units ELSE 0 END) as buy_units,
+        SUM(CASE WHEN type = 'Sell' THEN units ELSE 0 END) as sell_units,
+        SUM(CASE WHEN type = 'Income' THEN units ELSE 0 END) as income_units,
+        SUM(CASE WHEN type = 'Buy' THEN units WHEN type = 'Sell' THEN -units WHEN type = 'Income' THEN units ELSE 0 END) as net_units,
+        SUM(CASE WHEN type = 'Buy' THEN total ELSE 0 END) as buy_total,
+        SUM(CASE WHEN type = 'Sell' THEN total ELSE 0 END) as sell_total,
+        SUM(CASE WHEN type = 'Buy' THEN total WHEN type = 'Sell' THEN -total ELSE 0 END) as cost_basis
+      FROM trades
+      WHERE UPPER(token) = ?
+    `).get(token);
+
+    res.json({
+      token,
+      trades,
+      summary
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

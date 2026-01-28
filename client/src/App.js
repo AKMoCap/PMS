@@ -148,7 +148,8 @@ function App() {
     { id: 'investors', label: 'Investors' },
     { id: 'exits', label: 'Exits' },
     { id: 'sector-watch', label: 'SectorWatch' },
-    { id: 'upload', label: 'Upload' }
+    { id: 'upload', label: 'Upload' },
+    { id: 'checker', label: 'Checker' }
   ];
 
   return (
@@ -246,6 +247,11 @@ function App() {
             {activeTab === 'upload' && (
               <UploadTab
                 onRefresh={fetchData}
+              />
+            )}
+            {activeTab === 'checker' && (
+              <CheckerTab
+                prices={prices}
               />
             )}
           </>
@@ -1766,6 +1772,301 @@ function UploadTab({ onRefresh }) {
               Clear All Investors
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Checker Tab Component - Debug calculations
+function CheckerTab({ prices }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedToken, setSelectedToken] = useState(null);
+  const [tokenTrades, setTokenTrades] = useState(null);
+
+  useEffect(() => {
+    fetchCheckerData();
+  }, []);
+
+  const fetchCheckerData = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/checker/portfolio`);
+      setData(res.data);
+      setLoading(false);
+    } catch (error) {
+      console.error('Error fetching checker data:', error);
+      setLoading(false);
+    }
+  };
+
+  const fetchTokenTrades = async (token) => {
+    try {
+      const res = await axios.get(`${API_BASE}/checker/token/${token}`);
+      setTokenTrades(res.data);
+      setSelectedToken(token);
+    } catch (error) {
+      console.error('Error fetching token trades:', error);
+    }
+  };
+
+  if (loading) return <div className="loading">Loading...</div>;
+  if (!data) return <div>Error loading data</div>;
+
+  // Calculate portfolio value using prices
+  let totalPortfolioValue = 0;
+  const holdingsWithValues = data.holdings
+    .filter(h => h.token.toUpperCase() !== 'USDC')
+    .map(h => {
+      const token = h.token.toUpperCase();
+      const price = prices[token]?.price || 0;
+      const value = h.net_units * price;
+      totalPortfolioValue += value;
+      return {
+        ...h,
+        price,
+        value
+      };
+    })
+    .sort((a, b) => b.value - a.value);
+
+  // Add USDC
+  totalPortfolioValue += data.calculations.usdc_balance;
+
+  return (
+    <div>
+      {/* Summary */}
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <div className="card-header">
+          <span className="card-title">Portfolio Value Calculation Summary</span>
+        </div>
+        <div className="card-body">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '24px' }}>
+            <div>
+              <h3 style={{ color: 'var(--text-blue)', marginBottom: '12px' }}>Holdings Value</h3>
+              <p style={{ fontSize: '24px', fontWeight: '700' }}>{formatCurrency(totalPortfolioValue - data.calculations.usdc_balance, 2)}</p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Sum of (units × current price) for all tokens</p>
+            </div>
+            <div>
+              <h3 style={{ color: 'var(--text-blue)', marginBottom: '12px' }}>USDC Balance</h3>
+              <p style={{ fontSize: '24px', fontWeight: '700' }}>{formatCurrency(data.calculations.usdc_balance, 2)}</p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>= Subscriptions - Cost Basis - Expenses</p>
+            </div>
+            <div>
+              <h3 style={{ color: 'var(--positive)', marginBottom: '12px' }}>Total Portfolio Value</h3>
+              <p style={{ fontSize: '24px', fontWeight: '700', color: 'var(--positive)' }}>{formatCurrency(totalPortfolioValue, 2)}</p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Holdings + USDC</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* USDC Calculation Breakdown */}
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <div className="card-header">
+          <span className="card-title">USDC Balance Calculation</span>
+        </div>
+        <div className="card-body">
+          <table style={{ width: '100%', maxWidth: '600px' }}>
+            <tbody>
+              <tr>
+                <td style={{ padding: '8px 0' }}>Total Subscriptions (GP + LP)</td>
+                <td style={{ textAlign: 'right', fontWeight: '600' }}>{formatCurrency(data.calculations.total_subscriptions, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>GP Total</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.investors.gp_total, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>LP Total</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.investors.lp_total, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0' }}>Minus: Total Cost Basis of Holdings</td>
+                <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--negative)' }}>-{formatCurrency(data.calculations.total_cost_basis, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0' }}>Minus: Total Expenses</td>
+                <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--negative)' }}>-{formatCurrency(data.calculations.total_expenses, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>Fund Expenses</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.expenses.fund_expenses, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>Mgmt Fees</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.expenses.mgmt_fees, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>Setup Costs</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.expenses.setup_costs, 2)}</td>
+              </tr>
+              <tr style={{ borderTop: '2px solid var(--border-medium)' }}>
+                <td style={{ padding: '12px 0', fontWeight: '700', color: 'var(--text-blue)' }}>= USDC Balance</td>
+                <td style={{ textAlign: 'right', fontWeight: '700', color: 'var(--text-blue)', fontSize: '18px' }}>{formatCurrency(data.calculations.usdc_balance, 2)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Holdings Breakdown */}
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <div className="card-header">
+          <span className="card-title">Holdings Breakdown ({holdingsWithValues.length} tokens)</span>
+        </div>
+        <div className="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Token</th>
+                <th className="right">Buy Units</th>
+                <th className="right">Sell Units</th>
+                <th className="right">Income Units</th>
+                <th className="right">Net Units</th>
+                <th className="right">Price</th>
+                <th className="right">Current Value</th>
+                <th className="right">Cost Basis</th>
+                <th className="right">Trades</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {holdingsWithValues.map((h, idx) => (
+                <tr key={idx} style={{ background: h.net_units < 0 ? 'rgba(255,0,0,0.1)' : 'transparent' }}>
+                  <td className="token-name">{h.token}</td>
+                  <td className="right">{formatNumber(h.buy_units, 4)}</td>
+                  <td className="right" style={{ color: 'var(--negative)' }}>{formatNumber(h.sell_units, 4)}</td>
+                  <td className="right" style={{ color: 'var(--text-blue)' }}>{formatNumber(h.income_units, 4)}</td>
+                  <td className="right" style={{ fontWeight: '600', color: h.net_units < 0 ? 'var(--negative)' : 'inherit' }}>
+                    {formatNumber(h.net_units, 4)}
+                  </td>
+                  <td className="right">{formatPrice(h.price)}</td>
+                  <td className="right" style={{ fontWeight: '600' }}>{formatCurrency(h.value, 2)}</td>
+                  <td className="right">{formatCurrency(h.cost_basis, 2)}</td>
+                  <td className="right">{h.trade_count}</td>
+                  <td>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => fetchTokenTrades(h.token)}
+                    >
+                      View Trades
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              <tr style={{ background: 'var(--bg-card)', fontWeight: '700' }}>
+                <td>USDC</td>
+                <td className="right">-</td>
+                <td className="right">-</td>
+                <td className="right">-</td>
+                <td className="right">{formatNumber(data.calculations.usdc_balance, 2)}</td>
+                <td className="right">$1.00</td>
+                <td className="right">{formatCurrency(data.calculations.usdc_balance, 2)}</td>
+                <td className="right">-</td>
+                <td className="right">-</td>
+                <td>-</td>
+              </tr>
+              <tr style={{ background: 'var(--primary-blue-dim)', fontWeight: '700' }}>
+                <td colSpan="6">TOTAL PORTFOLIO VALUE</td>
+                <td className="right" style={{ fontSize: '16px', color: 'var(--text-blue)' }}>
+                  {formatCurrency(totalPortfolioValue, 2)}
+                </td>
+                <td className="right">{formatCurrency(data.calculations.total_cost_basis, 2)}</td>
+                <td colSpan="2"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Token Trades Modal */}
+      {selectedToken && tokenTrades && (
+        <div className="modal-overlay" onClick={() => setSelectedToken(null)}>
+          <div className="modal" style={{ maxWidth: '900px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span className="modal-title">Trades for {selectedToken}</span>
+              <button className="modal-close" onClick={() => setSelectedToken(null)}>&times;</button>
+            </div>
+            <div className="modal-body">
+              <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-dark)', borderRadius: '8px' }}>
+                <p><strong>Summary:</strong></p>
+                <p>Buy Units: {formatNumber(tokenTrades.summary?.buy_units || 0, 6)} |
+                   Sell Units: {formatNumber(tokenTrades.summary?.sell_units || 0, 6)} |
+                   Income: {formatNumber(tokenTrades.summary?.income_units || 0, 6)}</p>
+                <p style={{ fontWeight: '700', color: 'var(--text-blue)' }}>
+                  Net Units: {formatNumber(tokenTrades.summary?.net_units || 0, 6)}
+                </p>
+                <p>Cost Basis: {formatCurrency(tokenTrades.summary?.cost_basis || 0, 2)}</p>
+              </div>
+              <div className="table-container" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Type</th>
+                      <th className="right">Units</th>
+                      <th className="right">Avg Price</th>
+                      <th className="right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tokenTrades.trades?.map((t, idx) => (
+                      <tr key={idx}>
+                        <td>{t.date}</td>
+                        <td>
+                          <span className={`badge badge-${t.type.toLowerCase()}`}>{t.type}</span>
+                        </td>
+                        <td className="right">{formatNumber(t.units, 6)}</td>
+                        <td className="right">{formatPrice(t.avg_price)}</td>
+                        <td className="right">{formatCurrency(t.total, 2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Potential Issues */}
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title" style={{ color: 'var(--warning)' }}>Potential Issues to Check</span>
+        </div>
+        <div className="card-body">
+          <ul style={{ listStyle: 'disc', paddingLeft: '20px', color: 'var(--text-secondary)' }}>
+            {holdingsWithValues.filter(h => h.net_units < 0).length > 0 && (
+              <li style={{ marginBottom: '8px', color: 'var(--negative)' }}>
+                <strong>Negative holdings detected:</strong> {holdingsWithValues.filter(h => h.net_units < 0).map(h => h.token).join(', ')}
+                <br /><span style={{ fontSize: '12px' }}>This means more units were sold than bought. Check trade data.</span>
+              </li>
+            )}
+            {holdingsWithValues.filter(h => h.price === 0 && h.net_units > 0).length > 0 && (
+              <li style={{ marginBottom: '8px', color: 'var(--warning)' }}>
+                <strong>Holdings with no price data:</strong> {holdingsWithValues.filter(h => h.price === 0 && h.net_units > 0).map(h => h.token).join(', ')}
+                <br /><span style={{ fontSize: '12px' }}>These tokens have no price from CoinMarketCap API.</span>
+              </li>
+            )}
+            {data.calculations.usdc_balance < 0 && (
+              <li style={{ marginBottom: '8px', color: 'var(--negative)' }}>
+                <strong>Negative USDC balance:</strong> {formatCurrency(data.calculations.usdc_balance, 2)}
+                <br /><span style={{ fontSize: '12px' }}>Cost basis exceeds subscriptions. Check investor data or expenses.</span>
+              </li>
+            )}
+            {data.calculations.total_subscriptions === 0 && (
+              <li style={{ marginBottom: '8px', color: 'var(--warning)' }}>
+                <strong>No investor subscriptions loaded.</strong>
+                <br /><span style={{ fontSize: '12px' }}>Upload investor data to calculate USDC balance correctly.</span>
+              </li>
+            )}
+          </ul>
+          {holdingsWithValues.filter(h => h.net_units < 0 || (h.price === 0 && h.net_units > 0)).length === 0 &&
+           data.calculations.usdc_balance >= 0 &&
+           data.calculations.total_subscriptions > 0 && (
+            <p style={{ color: 'var(--positive)' }}>No obvious issues detected.</p>
+          )}
         </div>
       </div>
     </div>
