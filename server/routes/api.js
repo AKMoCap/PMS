@@ -13,11 +13,13 @@ const upload = multer({
     const allowedTypes = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
+      'application/vnd.ms-excel.sheet.macroEnabled.12',
       'text/csv'
     ];
     if (allowedTypes.includes(file.mimetype) ||
         file.originalname.endsWith('.xlsx') ||
         file.originalname.endsWith('.xls') ||
+        file.originalname.endsWith('.xlsm') ||
         file.originalname.endsWith('.csv')) {
       cb(null, true);
     } else {
