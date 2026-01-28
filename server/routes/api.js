@@ -1,7 +1,30 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+const multer = require('multer');
+const XLSX = require('xlsx');
 const { getDb } = require('../database');
+
+// Configure multer for file uploads (memory storage)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'text/csv'
+    ];
+    if (allowedTypes.includes(file.mimetype) ||
+        file.originalname.endsWith('.xlsx') ||
+        file.originalname.endsWith('.xls') ||
+        file.originalname.endsWith('.csv')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only Excel and CSV files are allowed'));
+    }
+  }
+});
 
 // CoinMarketCap API configuration
 const CMC_API_KEY = process.env.COINMARKETCAP_API_KEY;
@@ -519,6 +542,300 @@ router.get('/summary', (req, res) => {
       subscriptions,
       expenses,
       latestPerf
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =====================
+// UPLOAD ENDPOINTS
+// =====================
+
+// Helper function to parse Excel date
+function parseExcelDate(value) {
+  if (!value) return null;
+
+  // If it's already a string date
+  if (typeof value === 'string') {
+    // Try parsing common date formats
+    const dateStr = value.trim();
+
+    // Handle MM/DD/YYYY or M/D/YYYY format
+    const slashMatch = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (slashMatch) {
+      const [, month, day, year] = slashMatch;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+
+    // Handle YYYY-MM-DD format
+    const isoMatch = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (isoMatch) {
+      const [, year, month, day] = isoMatch;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+
+    return dateStr;
+  }
+
+  // If it's an Excel serial date number
+  if (typeof value === 'number') {
+    const excelEpoch = new Date(1899, 11, 30);
+    const jsDate = new Date(excelEpoch.getTime() + value * 86400000);
+    const year = jsDate.getFullYear();
+    const month = String(jsDate.getMonth() + 1).padStart(2, '0');
+    const day = String(jsDate.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  return null;
+}
+
+// Helper function to normalize trade type
+function normalizeTradeType(type) {
+  if (!type) return 'Buy';
+  const normalized = String(type).trim().toLowerCase();
+  if (normalized === 'sell') return 'Sell';
+  if (normalized === 'income') return 'Income';
+  return 'Buy';
+}
+
+// Upload trades from Excel
+router.post('/upload/trades', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Parse the Excel file
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    // Convert to JSON with header mapping
+    const rawData = XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+    if (rawData.length === 0) {
+      return res.status(400).json({ error: 'No data found in the file' });
+    }
+
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO trades (date, token, units, avg_price, total, type)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    let imported = 0;
+    let skipped = 0;
+    const errors = [];
+
+    // Process each row
+    const insertMany = db.transaction((rows) => {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        try {
+          // Map Excel columns to our fields
+          // Excel columns: Token, Date, Units, Avg. Price, Total Bot, Fee, App, Buy/Sell/Income
+          const token = row['Token'] || row['token'] || row['TOKEN'];
+          const dateValue = row['Date'] || row['date'] || row['DATE'];
+          const units = row['Units'] || row['units'] || row['UNITS'];
+          const avgPrice = row['Avg. Price'] || row['Avg Price'] || row['avg_price'] || row['AVG. PRICE'] || row['Avg. Price '];
+          const total = row['Total Bot'] || row['Total'] || row['total'] || row['TOTAL BOT'] || row['Total Bot '];
+          const type = row['Buy/Sell/Income'] || row['Type'] || row['type'] || row['BUY/SELL/INCOME'];
+
+          // Skip if no token
+          if (!token) {
+            skipped++;
+            continue;
+          }
+
+          // Parse and validate data
+          const parsedDate = parseExcelDate(dateValue);
+          const parsedUnits = parseFloat(units);
+          let parsedAvgPrice = avgPrice ? parseFloat(String(avgPrice).replace(/[$,]/g, '')) : null;
+          let parsedTotal = total ? parseFloat(String(total).replace(/[$,]/g, '')) : null;
+
+          // Skip if units is invalid or zero
+          if (isNaN(parsedUnits) || parsedUnits === 0) {
+            skipped++;
+            continue;
+          }
+
+          // Calculate missing field
+          if (!parsedAvgPrice && parsedTotal && parsedUnits) {
+            parsedAvgPrice = Math.abs(parsedTotal / parsedUnits);
+          } else if (!parsedTotal && parsedAvgPrice && parsedUnits) {
+            parsedTotal = parsedAvgPrice * parsedUnits;
+          }
+
+          // Normalize trade type
+          const normalizedType = normalizeTradeType(type);
+
+          // Insert the trade
+          stmt.run(
+            parsedDate || new Date().toISOString().split('T')[0],
+            String(token).toUpperCase().trim(),
+            Math.abs(parsedUnits),
+            parsedAvgPrice,
+            parsedTotal ? Math.abs(parsedTotal) : null,
+            normalizedType
+          );
+          imported++;
+        } catch (rowError) {
+          errors.push(`Row ${i + 2}: ${rowError.message}`);
+          skipped++;
+        }
+      }
+    });
+
+    insertMany(rawData);
+
+    res.json({
+      success: true,
+      imported,
+      skipped,
+      total: rawData.length,
+      errors: errors.slice(0, 10) // Return first 10 errors only
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Upload investors from Excel
+router.post('/upload/investors', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rawData = XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+    if (rawData.length === 0) {
+      return res.status(400).json({ error: 'No data found in the file' });
+    }
+
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO investors (month, client, type, amount)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    let imported = 0;
+    let skipped = 0;
+    const errors = [];
+
+    const insertMany = db.transaction((rows) => {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        try {
+          // Map Excel columns: Month, Client, GP / LP, Amount
+          const monthValue = row['Month'] || row['month'] || row['MONTH'];
+          const client = row['Client'] || row['client'] || row['CLIENT'];
+          const gpLp = row['GP / LP'] || row['GP/LP'] || row['Type'] || row['type'];
+          const amount = row['Amount'] || row['amount'] || row['AMOUNT'];
+
+          if (!client || !amount) {
+            skipped++;
+            continue;
+          }
+
+          // Parse month - convert to YYYY-MM format
+          let parsedMonth = '';
+          if (typeof monthValue === 'string') {
+            // Handle formats like "June-22", "Jun-22", "2022-06"
+            const monthStr = monthValue.trim();
+            const monthMatch = monthStr.match(/^([A-Za-z]+)-(\d{2})$/);
+            if (monthMatch) {
+              const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+              const monthIndex = monthNames.findIndex(m => monthMatch[1].toLowerCase().startsWith(m));
+              if (monthIndex !== -1) {
+                const year = parseInt(monthMatch[2]) + 2000;
+                parsedMonth = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+              }
+            } else if (monthStr.match(/^\d{4}-\d{2}$/)) {
+              parsedMonth = monthStr;
+            }
+          } else if (monthValue instanceof Date) {
+            parsedMonth = `${monthValue.getFullYear()}-${String(monthValue.getMonth() + 1).padStart(2, '0')}`;
+          }
+
+          // Determine GP or LP
+          const investorType = String(gpLp || '').toUpperCase().includes('GP') ? 'GP' : 'LP';
+
+          // Parse amount
+          const parsedAmount = parseFloat(String(amount).replace(/[$,()]/g, '').trim());
+          const finalAmount = String(amount).includes('(') || String(amount).includes('-') ? -Math.abs(parsedAmount) : parsedAmount;
+
+          if (isNaN(finalAmount)) {
+            skipped++;
+            continue;
+          }
+
+          stmt.run(parsedMonth, String(client).trim(), investorType, finalAmount);
+          imported++;
+        } catch (rowError) {
+          errors.push(`Row ${i + 2}: ${rowError.message}`);
+          skipped++;
+        }
+      }
+    });
+
+    insertMany(rawData);
+
+    res.json({
+      success: true,
+      imported,
+      skipped,
+      total: rawData.length,
+      errors: errors.slice(0, 10)
+    });
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear all trades (for re-importing)
+router.delete('/trades/all', (req, res) => {
+  try {
+    const db = getDb();
+    const result = db.prepare('DELETE FROM trades').run();
+    res.json({ success: true, deleted: result.changes });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear all investors (for re-importing)
+router.delete('/investors/all', (req, res) => {
+  try {
+    const db = getDb();
+    const result = db.prepare('DELETE FROM investors').run();
+    res.json({ success: true, deleted: result.changes });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get upload statistics
+router.get('/upload/stats', (req, res) => {
+  try {
+    const db = getDb();
+    const tradesCount = db.prepare('SELECT COUNT(*) as count FROM trades').get();
+    const investorsCount = db.prepare('SELECT COUNT(*) as count FROM investors').get();
+    const oldestTrade = db.prepare('SELECT MIN(date) as date FROM trades').get();
+    const newestTrade = db.prepare('SELECT MAX(date) as date FROM trades').get();
+
+    res.json({
+      trades: tradesCount.count,
+      investors: investorsCount.count,
+      oldestTrade: oldestTrade.date,
+      newestTrade: newestTrade.date
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

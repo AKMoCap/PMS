@@ -147,7 +147,8 @@ function App() {
     { id: 'perf-tracker', label: 'Perf Tracker' },
     { id: 'investors', label: 'Investors' },
     { id: 'exits', label: 'Exits' },
-    { id: 'sector-watch', label: 'SectorWatch' }
+    { id: 'sector-watch', label: 'SectorWatch' },
+    { id: 'upload', label: 'Upload' }
   ];
 
   return (
@@ -239,6 +240,11 @@ function App() {
             {activeTab === 'sector-watch' && (
               <SectorWatchTab
                 prices={prices}
+                onRefresh={fetchData}
+              />
+            )}
+            {activeTab === 'upload' && (
+              <UploadTab
                 onRefresh={fetchData}
               />
             )}
@@ -1500,6 +1506,239 @@ function SectorWatchTab({ prices, onRefresh }) {
               )}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Upload Tab Component
+function UploadTab({ onRefresh }) {
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [uploadType, setUploadType] = useState('trades');
+
+  // Fetch upload stats
+  useEffect(() => {
+    fetchStats();
+  }, []);
+
+  const fetchStats = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/upload/stats`);
+      setStats(res.data);
+    } catch (error) {
+      console.error('Error fetching stats:', error);
+    }
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploading(true);
+    setResult(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const endpoint = uploadType === 'trades' ? '/upload/trades' : '/upload/investors';
+      const res = await axios.post(`${API_BASE}${endpoint}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setResult(res.data);
+      fetchStats();
+      onRefresh();
+    } catch (error) {
+      setResult({
+        success: false,
+        error: error.response?.data?.error || error.message
+      });
+    } finally {
+      setUploading(false);
+      e.target.value = ''; // Reset file input
+    }
+  };
+
+  const handleClearData = async (type) => {
+    const confirmMsg = type === 'trades'
+      ? 'Are you sure you want to delete ALL trades? This cannot be undone.'
+      : 'Are you sure you want to delete ALL investor records? This cannot be undone.';
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const endpoint = type === 'trades' ? '/trades/all' : '/investors/all';
+      await axios.delete(`${API_BASE}${endpoint}`);
+      setResult({ success: true, message: `All ${type} deleted successfully` });
+      fetchStats();
+      onRefresh();
+    } catch (error) {
+      setResult({
+        success: false,
+        error: error.response?.data?.error || error.message
+      });
+    }
+  };
+
+  return (
+    <div>
+      {/* Stats Cards */}
+      <div className="portfolio-summary">
+        <div className="summary-card">
+          <div className="summary-card-value">{stats?.trades || 0}</div>
+          <div className="summary-card-label">Total Trades</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card-value">{stats?.investors || 0}</div>
+          <div className="summary-card-label">Investor Records</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card-value" style={{ fontSize: '16px' }}>
+            {stats?.oldestTrade || '-'}
+          </div>
+          <div className="summary-card-label">Oldest Trade</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-card-value" style={{ fontSize: '16px' }}>
+            {stats?.newestTrade || '-'}
+          </div>
+          <div className="summary-card-label">Newest Trade</div>
+        </div>
+      </div>
+
+      {/* Upload Section */}
+      <div className="card" style={{ marginBottom: '24px' }}>
+        <div className="card-header">
+          <span className="card-title">Upload Data</span>
+        </div>
+        <div className="card-body">
+          <div className="form-group">
+            <label className="form-label">Upload Type</label>
+            <select
+              className="form-select"
+              value={uploadType}
+              onChange={(e) => setUploadType(e.target.value)}
+              style={{ maxWidth: '300px' }}
+            >
+              <option value="trades">Trades</option>
+              <option value="investors">Investors</option>
+            </select>
+          </div>
+
+          {uploadType === 'trades' && (
+            <div style={{ marginBottom: '16px', padding: '16px', background: 'var(--bg-dark)', borderRadius: '8px' }}>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                <strong>Expected Excel columns for Trades:</strong>
+              </p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                Token, Date, Units, Avg. Price, Total Bot, Fee, App, Buy/Sell/Income
+              </p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                Note: Fee and App columns will be ignored. Either Avg. Price or Total Bot is required (the other will be calculated).
+              </p>
+            </div>
+          )}
+
+          {uploadType === 'investors' && (
+            <div style={{ marginBottom: '16px', padding: '16px', background: 'var(--bg-dark)', borderRadius: '8px' }}>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                <strong>Expected Excel columns for Investors:</strong>
+              </p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                Month, Client, GP / LP, Amount
+              </p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
+                Note: Month format should be "June-22" or "2022-06". Use negative amounts for redemptions.
+              </p>
+            </div>
+          )}
+
+          <div className="form-group">
+            <label className="form-label">Select Excel File (.xlsx, .xls, .csv)</label>
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={handleFileUpload}
+              disabled={uploading}
+              className="form-input"
+              style={{ padding: '8px' }}
+            />
+          </div>
+
+          {uploading && (
+            <div style={{ padding: '16px', color: 'var(--text-blue)' }}>
+              Uploading and processing file...
+            </div>
+          )}
+
+          {result && (
+            <div style={{
+              padding: '16px',
+              marginTop: '16px',
+              borderRadius: '8px',
+              background: result.success ? 'rgba(0, 255, 0, 0.1)' : 'rgba(255, 0, 0, 0.1)',
+              border: `1px solid ${result.success ? 'var(--positive)' : 'var(--negative)'}`
+            }}>
+              {result.success ? (
+                <>
+                  <p style={{ color: 'var(--positive)', fontWeight: '600', marginBottom: '8px' }}>
+                    Upload Successful!
+                  </p>
+                  {result.imported !== undefined && (
+                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                      Imported: {result.imported} | Skipped: {result.skipped} | Total rows: {result.total}
+                    </p>
+                  )}
+                  {result.message && (
+                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                      {result.message}
+                    </p>
+                  )}
+                  {result.errors && result.errors.length > 0 && (
+                    <div style={{ marginTop: '8px' }}>
+                      <p style={{ fontSize: '12px', color: 'var(--warning)' }}>Errors:</p>
+                      {result.errors.map((err, i) => (
+                        <p key={i} style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{err}</p>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p style={{ color: 'var(--negative)' }}>
+                  Error: {result.error}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Danger Zone */}
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title" style={{ color: 'var(--negative)' }}>Danger Zone</span>
+        </div>
+        <div className="card-body">
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
+            Use these options to clear data before re-importing. This action cannot be undone.
+          </p>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <button
+              className="btn btn-danger"
+              onClick={() => handleClearData('trades')}
+            >
+              Clear All Trades
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={() => handleClearData('investors')}
+            >
+              Clear All Investors
+            </button>
+          </div>
         </div>
       </div>
     </div>
