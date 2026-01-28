@@ -27,6 +27,7 @@ if (process.env.NODE_ENV === 'production') {
 // Initialize database and start server
 db.initialize();
 
-app.listen(PORT, () => {
-  console.log(`Motus Portfolio server running on port ${PORT}`);
+const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
+app.listen(PORT, HOST, () => {
+  console.log(`Motus Portfolio server running on ${HOST}:${PORT}`);
 });
