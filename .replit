@@ -39,5 +39,5 @@ externalPort = 80
 
 [deployment]
 deploymentTarget = "vm"
-run = ["node", "server/index.js"]
-build = ["bash", "-c", "npm install && cd client && npm install && npm run build"]
+run = ["bash", "-c", "cd client && npm run build && cd .. && NODE_ENV=production node server/index.js"]
+build = ["npm", "run", "install-all"]
