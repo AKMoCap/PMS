@@ -13,11 +13,13 @@ const upload = multer({
     const allowedTypes = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
+      'application/vnd.ms-excel.sheet.macroEnabled.12',
       'text/csv'
     ];
     if (allowedTypes.includes(file.mimetype) ||
         file.originalname.endsWith('.xlsx') ||
         file.originalname.endsWith('.xls') ||
+        file.originalname.endsWith('.xlsm') ||
         file.originalname.endsWith('.csv')) {
       cb(null, true);
     } else {
@@ -600,12 +602,34 @@ function normalizeTradeType(type) {
   return 'Buy';
 }
 
+// Helper function to find column value with flexible matching
+function getColumnValue(row, ...possibleNames) {
+  for (const name of possibleNames) {
+    if (row[name] !== undefined && row[name] !== null) {
+      return row[name];
+    }
+  }
+  // Try case-insensitive search through all keys
+  const rowKeys = Object.keys(row);
+  for (const name of possibleNames) {
+    const lowerName = name.toLowerCase().trim();
+    for (const key of rowKeys) {
+      if (key.toLowerCase().trim() === lowerName) {
+        return row[key];
+      }
+    }
+  }
+  return null;
+}
+
 // Upload trades from Excel
 router.post('/upload/trades', upload.single('file'), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
+
+    console.log('Processing file:', req.file.originalname, 'Size:', req.file.size);
 
     // Parse the Excel file
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
@@ -614,6 +638,12 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
 
     // Convert to JSON with header mapping
     const rawData = XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+    console.log('Parsed rows:', rawData.length);
+    if (rawData.length > 0) {
+      console.log('First row keys:', Object.keys(rawData[0]));
+      console.log('First row data:', JSON.stringify(rawData[0]));
+    }
 
     if (rawData.length === 0) {
       return res.status(400).json({ error: 'No data found in the file' });
@@ -634,14 +664,13 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
         try {
-          // Map Excel columns to our fields
-          // Excel columns: Token, Date, Units, Avg. Price, Total Bot, Fee, App, Buy/Sell/Income
-          const token = row['Token'] || row['token'] || row['TOKEN'];
-          const dateValue = row['Date'] || row['date'] || row['DATE'];
-          const units = row['Units'] || row['units'] || row['UNITS'];
-          const avgPrice = row['Avg. Price'] || row['Avg Price'] || row['avg_price'] || row['AVG. PRICE'] || row['Avg. Price '];
-          const total = row['Total Bot'] || row['Total'] || row['total'] || row['TOTAL BOT'] || row['Total Bot '];
-          const type = row['Buy/Sell/Income'] || row['Type'] || row['type'] || row['BUY/SELL/INCOME'];
+          // Map Excel columns to our fields using flexible matching
+          const token = getColumnValue(row, 'Token', 'token', 'TOKEN', 'SYMBOL', 'Symbol');
+          const dateValue = getColumnValue(row, 'Date', 'date', 'DATE');
+          const units = getColumnValue(row, 'Units', 'units', 'UNITS', 'Quantity', 'quantity', 'QTY', 'Qty');
+          const avgPrice = getColumnValue(row, 'Avg Price', 'Avg. Price', 'avg_price', 'AVG PRICE', 'Price', 'price', 'PRICE', 'AvgPrice');
+          const total = getColumnValue(row, 'Total Bot', 'Total', 'total', 'TOTAL BOT', 'TOTAL', 'Amount', 'amount', 'TotalBot');
+          const type = getColumnValue(row, 'Buy/Sell/Income', 'Type', 'type', 'TYPE', 'Side', 'side', 'Action', 'action');
 
           // Skip if no token
           if (!token) {
@@ -682,6 +711,7 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
           );
           imported++;
         } catch (rowError) {
+          console.error(`Row ${i + 2} error:`, rowError.message);
           errors.push(`Row ${i + 2}: ${rowError.message}`);
           skipped++;
         }
@@ -689,6 +719,8 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
     });
 
     insertMany(rawData);
+
+    console.log('Import complete - Imported:', imported, 'Skipped:', skipped);
 
     res.json({
       success: true,
@@ -699,7 +731,7 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
     });
   } catch (error) {
     console.error('Upload error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message || 'Failed to process file' });
   }
 });
 
