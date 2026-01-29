@@ -1069,13 +1069,16 @@ router.post('/upload/perf-tracker', upload.single('file'), (req, res) => {
     // Do NOT clear perf_tracker here to preserve manually-entered expense data
 
     const stmt = db.prepare(`
-      INSERT INTO perf_tracker (month, gp_subs, lp_subs, initial_value, ending_value,
+      INSERT INTO perf_tracker (month, gp_subs, lp_subs, fund_expenses, mgmt_fees,
+                                initial_value, ending_value,
                                 motus_return, btc_return, eth_return, cci30_return,
                                 sp_ex_mega_return, spx_return, qqq_return)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(month) DO UPDATE SET
         gp_subs = excluded.gp_subs,
         lp_subs = excluded.lp_subs,
+        fund_expenses = excluded.fund_expenses,
+        mgmt_fees = excluded.mgmt_fees,
         initial_value = excluded.initial_value,
         ending_value = excluded.ending_value,
         motus_return = excluded.motus_return,
@@ -1106,6 +1109,8 @@ router.post('/upload/perf-tracker', upload.single('file'), (req, res) => {
 
           const gpSubs = parseFloat(getColumnValue(row, 'GP SUBS', 'GP Subs', 'gp_subs') || 0);
           const lpSubs = parseFloat(getColumnValue(row, 'LP SUBS', 'LP Subs', 'lp_subs') || 0);
+          const fundExpenses = parseFloat(getColumnValue(row, 'FUND EXP', 'Fund Exp', 'Fund Expenses', 'fund_expenses', 'FUND EXPENSES') || 0);
+          const mgmtFees = parseFloat(getColumnValue(row, 'MGMT FEES', 'Mgmt Fees', 'MGMT FEE', 'Mgmt Fee', 'mgmt_fees', 'Management Fees') || 0);
           const initialValue = parseFloat(getColumnValue(row, 'INITIAL VALUE', 'Initial Value', 'initial_value') || 0);
           const endingValue = parseFloat(getColumnValue(row, 'END/LIVE VALUE', 'END VALUE', 'ENDING VALUE', 'Ending Value', 'ending_value', 'End/Live Value') || 0);
           const motusReturn = parseReturnValue(row, 'MOTUS', 'Motus', 'motus_return', 'Motus Return');
@@ -1119,6 +1124,8 @@ router.post('/upload/perf-tracker', upload.single('file'), (req, res) => {
           stmt.run(parsedMonth,
             isNaN(gpSubs) ? 0 : gpSubs,
             isNaN(lpSubs) ? 0 : lpSubs,
+            isNaN(fundExpenses) ? 0 : fundExpenses,
+            isNaN(mgmtFees) ? 0 : mgmtFees,
             isNaN(initialValue) ? 0 : initialValue,
             isNaN(endingValue) ? 0 : endingValue,
             motusReturn,

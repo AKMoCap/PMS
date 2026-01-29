@@ -1231,6 +1231,8 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
                 <th>Month</th>
                 <th className="right">GP Subs</th>
                 <th className="right">LP Subs</th>
+                <th className="right">Fund Exp</th>
+                <th className="right">Mgmt Fees</th>
                 <th className="right">Initial Value</th>
                 <th className="right">End/Live Value</th>
                 <th className="right">Motus</th>
@@ -1247,6 +1249,8 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
               {!hasCurrentMonth && (
                 <tr style={{ background: 'rgba(58, 180, 239, 0.05)', borderLeft: '3px solid var(--primary-blue)' }}>
                   <td style={{ fontWeight: '600', color: 'var(--text-blue)' }}>{formatMonth(currentMonth)}</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
                   <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
                   <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
                   <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
@@ -1293,7 +1297,7 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
               )}
               {sortedData.length === 0 && hasCurrentMonth === false ? null : sortedData.length === 0 ? (
                 <tr>
-                  <td colSpan="13" className="empty-state">
+                  <td colSpan="15" className="empty-state">
                     <div className="empty-state-title">No performance records</div>
                     <div>Upload data via the Upload tab or click "Add Month" to start tracking</div>
                   </td>
@@ -1304,6 +1308,8 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
                     <td style={{ fontWeight: '600' }}>{formatMonth(record.month)}</td>
                     <td className="right">{record.gp_subs ? formatCurrency(record.gp_subs, 0) : '-'}</td>
                     <td className="right">{record.lp_subs ? formatCurrency(record.lp_subs, 0) : '-'}</td>
+                    <td className="right">{record.fund_expenses ? formatCurrency(record.fund_expenses, 0) : '-'}</td>
+                    <td className="right">{record.mgmt_fees ? formatCurrency(record.mgmt_fees, 0) : '-'}</td>
                     <td className="right">{record.initial_value ? formatCurrency(record.initial_value, 0) : '-'}</td>
                     <td className="right">{record.ending_value ? formatCurrency(record.ending_value, 0) : '-'}</td>
                     <td className="right">{renderReturnCell(record.motus_return)}</td>
@@ -1387,6 +1393,18 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
                 </div>
                 <div className="form-row">
                   <div className="form-group">
+                    <label className="form-label">Fund Exp</label>
+                    <input type="number" step="any" className="form-input" value={formData.fund_expenses}
+                      onChange={e => setFormData({ ...formData, fund_expenses: e.target.value })} placeholder="0" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Mgmt Fees</label>
+                    <input type="number" step="any" className="form-input" value={formData.mgmt_fees}
+                      onChange={e => setFormData({ ...formData, mgmt_fees: e.target.value })} placeholder="0" />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
                     <label className="form-label">Initial Value</label>
                     <input
                       type="number"
@@ -1452,26 +1470,6 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
                   <label className="form-label">QQQ</label>
                   <input type="number" step="any" className="form-input" value={formData.qqq_return}
                     onChange={e => setFormData({ ...formData, qqq_return: e.target.value })} placeholder="0" />
-                </div>
-                <p style={{ fontSize: '13px', color: 'var(--text-blue)', marginBottom: '12px', marginTop: '16px', fontWeight: '600' }}>
-                  Expenses
-                </p>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label className="form-label">Fund Expenses</label>
-                    <input type="number" step="any" className="form-input" value={formData.fund_expenses}
-                      onChange={e => setFormData({ ...formData, fund_expenses: e.target.value })} placeholder="0" />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Mgmt Fees</label>
-                    <input type="number" step="any" className="form-input" value={formData.mgmt_fees}
-                      onChange={e => setFormData({ ...formData, mgmt_fees: e.target.value })} placeholder="0" />
-                  </div>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Setup Costs</label>
-                  <input type="number" step="any" className="form-input" value={formData.setup_costs}
-                    onChange={e => setFormData({ ...formData, setup_costs: e.target.value })} placeholder="0" />
                 </div>
               </div>
               <div className="modal-footer">
@@ -1581,34 +1579,46 @@ function InvestorsTab({ investors, onRefresh }) {
       <div className="portfolio-summary">
         <div className="summary-card">
           <div className="summary-card-value">{formatCurrency(totalAll, 0)}</div>
-          <div className="summary-card-label">Total Subscriptions</div>
+          <div className="summary-card-label">Net Subscriptions</div>
         </div>
         <div className="summary-card">
-          <div className="summary-card-value" style={{ color: 'var(--warning)', fontSize: '22px' }}>
-            {formatCurrency(gpSubscriptions, 0)}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            GP Subscriptions ({gpSubsPct}%)
-          </div>
-          <div className="summary-card-value" style={{ fontSize: '22px', marginTop: '8px' }}>
-            {formatCurrency(lpSubscriptions, 0)}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            LP Subscriptions ({lpSubsPct}%)
+          <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+            <div>
+              <div className="summary-card-value" style={{ color: 'var(--warning)', fontSize: '22px' }}>
+                {formatCurrency(gpSubscriptions, 0)}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                GP Subscriptions ({gpSubsPct}%)
+              </div>
+            </div>
+            <div>
+              <div className="summary-card-value" style={{ fontSize: '22px' }}>
+                {formatCurrency(lpSubscriptions, 0)}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                LP Subscriptions ({lpSubsPct}%)
+              </div>
+            </div>
           </div>
         </div>
         <div className="summary-card">
-          <div className="summary-card-value" style={{ color: 'var(--negative)', fontSize: '22px' }}>
-            {formatCurrency(gpRedemptions, 0)}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            GP Redemptions
-          </div>
-          <div className="summary-card-value" style={{ color: 'var(--negative)', fontSize: '22px', marginTop: '8px' }}>
-            {formatCurrency(lpRedemptions, 0)}
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-            LP Redemptions
+          <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+            <div>
+              <div className="summary-card-value" style={{ color: 'var(--negative)', fontSize: '22px' }}>
+                {formatCurrency(gpRedemptions, 0)}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                GP Redemptions
+              </div>
+            </div>
+            <div>
+              <div className="summary-card-value" style={{ color: 'var(--negative)', fontSize: '22px' }}>
+                {formatCurrency(lpRedemptions, 0)}
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                LP Redemptions
+              </div>
+            </div>
           </div>
           {totalRedemptions !== 0 && (
             <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '6px', borderTop: '1px solid var(--border-dark)', paddingTop: '6px' }}>
