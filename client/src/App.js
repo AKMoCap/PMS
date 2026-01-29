@@ -850,7 +850,17 @@ function TradesTab({ trades, onRefresh }) {
         </div>
 
         <div className="table-container">
-          <table className="compact-table">
+          <table className="compact-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+            <colgroup>
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '10%' }} />
+              <col style={{ width: '13%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '21%' }} />
+              <col style={{ width: '14%' }} />
+            </colgroup>
             <thead>
               <tr>
                 <th>Date</th>
@@ -884,7 +894,7 @@ function TradesTab({ trades, onRefresh }) {
                         {trade.type}
                       </span>
                     </td>
-                    <td style={{ maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {trade.notes || ''}
                     </td>
                     <td>
@@ -1061,8 +1071,12 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
   });
 
   const sortedData = useMemo(() => {
-    return [...perfTracker].sort((a, b) => a.month.localeCompare(b.month));
+    return [...perfTracker].sort((a, b) => b.month.localeCompare(a.month));
   }, [perfTracker]);
+
+  // Current month placeholder
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const hasCurrentMonth = perfTracker.some(r => r.month === currentMonth);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -1227,7 +1241,54 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
               </tr>
             </thead>
             <tbody>
-              {sortedData.length === 0 ? (
+              {!hasCurrentMonth && (
+                <tr style={{ background: 'rgba(58, 180, 239, 0.05)', borderLeft: '3px solid var(--primary-blue)' }}>
+                  <td style={{ fontWeight: '600', color: 'var(--text-blue)' }}>{formatMonth(currentMonth)}</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td className="right" style={{ color: 'var(--text-muted)' }}>-</td>
+                  <td>
+                    <div className="actions">
+                      <button
+                        className="btn btn-icon btn-sm"
+                        style={{ color: 'var(--text-blue)' }}
+                        onClick={() => {
+                          setEditingRecord(null);
+                          setFormData({
+                            month: currentMonth,
+                            gp_subs: '',
+                            lp_subs: '',
+                            initial_value: '',
+                            ending_value: '',
+                            motus_return: '',
+                            btc_return: '',
+                            eth_return: '',
+                            cci30_return: '',
+                            sp_ex_mega_return: '',
+                            spx_return: '',
+                            qqq_return: '',
+                            fund_expenses: '',
+                            mgmt_fees: '',
+                            setup_costs: ''
+                          });
+                          setShowModal(true);
+                        }}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )}
+              {sortedData.length === 0 && hasCurrentMonth === false ? null : sortedData.length === 0 ? (
                 <tr>
                   <td colSpan="13" className="empty-state">
                     <div className="empty-state-title">No performance records</div>
@@ -1446,6 +1507,19 @@ function InvestorsTab({ investors, onRefresh }) {
   // Calculate totals
   const gpTotal = investors.filter(i => i.type === 'GP').reduce((sum, i) => sum + i.amount, 0);
   const lpTotal = investors.filter(i => i.type === 'LP').reduce((sum, i) => sum + i.amount, 0);
+  const totalAll = gpTotal + lpTotal;
+
+  // Subscriptions only (positive amounts)
+  const gpSubscriptions = investors.filter(i => i.type === 'GP' && i.amount > 0).reduce((sum, i) => sum + i.amount, 0);
+  const lpSubscriptions = investors.filter(i => i.type === 'LP' && i.amount > 0).reduce((sum, i) => sum + i.amount, 0);
+  const totalSubscriptions = gpSubscriptions + lpSubscriptions;
+  const gpSubsPct = totalSubscriptions > 0 ? (gpSubscriptions / totalSubscriptions * 100).toFixed(1) : '0.0';
+  const lpSubsPct = totalSubscriptions > 0 ? (lpSubscriptions / totalSubscriptions * 100).toFixed(1) : '0.0';
+
+  // Redemptions only (negative amounts)
+  const gpRedemptions = investors.filter(i => i.type === 'GP' && i.amount < 0).reduce((sum, i) => sum + i.amount, 0);
+  const lpRedemptions = investors.filter(i => i.type === 'LP' && i.amount < 0).reduce((sum, i) => sum + i.amount, 0);
+  const totalRedemptions = gpRedemptions + lpRedemptions;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -1503,18 +1577,41 @@ function InvestorsTab({ investors, onRefresh }) {
       {/* Summary Cards */}
       <div className="portfolio-summary">
         <div className="summary-card">
-          <div className="summary-card-value">{formatCurrency(gpTotal + lpTotal, 0)}</div>
+          <div className="summary-card-value">{formatCurrency(totalAll, 0)}</div>
           <div className="summary-card-label">Total Subscriptions</div>
         </div>
         <div className="summary-card">
-          <div className="summary-card-value" style={{ color: 'var(--warning)' }}>
-            {formatCurrency(gpTotal, 0)}
+          <div className="summary-card-value" style={{ color: 'var(--warning)', fontSize: '22px' }}>
+            {formatCurrency(gpSubscriptions, 0)}
           </div>
-          <div className="summary-card-label">GP Subscriptions</div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            GP Subscriptions ({gpSubsPct}%)
+          </div>
+          <div className="summary-card-value" style={{ fontSize: '22px', marginTop: '8px' }}>
+            {formatCurrency(lpSubscriptions, 0)}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            LP Subscriptions ({lpSubsPct}%)
+          </div>
         </div>
         <div className="summary-card">
-          <div className="summary-card-value">{formatCurrency(lpTotal, 0)}</div>
-          <div className="summary-card-label">LP Subscriptions</div>
+          <div className="summary-card-value" style={{ color: 'var(--negative)', fontSize: '22px' }}>
+            {formatCurrency(gpRedemptions, 0)}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            GP Redemptions
+          </div>
+          <div className="summary-card-value" style={{ color: 'var(--negative)', fontSize: '22px', marginTop: '8px' }}>
+            {formatCurrency(lpRedemptions, 0)}
+          </div>
+          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+            LP Redemptions
+          </div>
+          {totalRedemptions !== 0 && (
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '6px', borderTop: '1px solid var(--border-dark)', paddingTop: '6px' }}>
+              Total: {formatCurrency(totalRedemptions, 0)}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1779,12 +1876,17 @@ function ExitsTab({ exits, onRefresh }) {
           </button>
         </div>
         <div className="table-container">
-          <table>
+          <table style={{ tableLayout: 'fixed' }}>
+            <colgroup>
+              <col style={{ width: '140px' }} />
+              <col style={{ width: '140px' }} />
+              <col />
+            </colgroup>
             <thead>
               <tr>
                 <th>Token</th>
                 <th className="right">Cost</th>
-                <th>Actions</th>
+                <th className="right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1799,9 +1901,11 @@ function ExitsTab({ exits, onRefresh }) {
                 exits.map(exit => (
                   <tr key={exit.id}>
                     <td className="token-name">{exit.token}</td>
-                    <td className="right">{formatCurrency(exit.cost_basis)}</td>
-                    <td>
-                      <div className="actions">
+                    <td className={`right ${exit.cost_basis < 0 ? 'positive' : exit.cost_basis > 0 ? 'negative' : ''}`}>
+                      {formatCurrency(exit.cost_basis)}
+                    </td>
+                    <td className="right">
+                      <div className="actions" style={{ justifyContent: 'flex-end' }}>
                         <button
                           className="btn btn-icon btn-sm"
                           onClick={() => handleEdit(exit)}
