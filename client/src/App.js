@@ -2479,6 +2479,54 @@ function CheckerTab({ prices }) {
     URL.revokeObjectURL(url);
   };
 
+  // Selected holding data for trades modal
+  const selectedHolding = selectedToken ? holdingsWithValues.find(h => h.token.toUpperCase() === selectedToken.toUpperCase()) : null;
+
+  // CSV export for individual token trades
+  const exportTradesCSV = () => {
+    if (!tokenTrades || !selectedToken) return;
+
+    // Summary section matching Holdings Breakdown columns
+    const summaryHeaders = ['Token', 'Buy Units', 'Sell Units', 'Income Units', 'Net Units', 'Current Value ($)', 'Cost Basis ($)', 'Trades'];
+    const summaryRow = [
+      selectedToken,
+      tokenTrades.summary?.buy_units || 0,
+      tokenTrades.summary?.sell_units || 0,
+      tokenTrades.summary?.income_units || 0,
+      tokenTrades.summary?.net_units || 0,
+      (selectedHolding?.value || 0).toFixed(2),
+      tokenTrades.summary?.cost_basis || 0,
+      tokenTrades.trades?.length || 0
+    ];
+
+    // Individual trades
+    const tradeHeaders = ['Date', 'Type', 'Units', 'Avg Price', 'Total'];
+    const tradeRows = (tokenTrades.trades || []).map(t => [
+      t.date,
+      t.type,
+      t.units,
+      t.avg_price,
+      t.total
+    ]);
+
+    const lines = [
+      summaryHeaders.join(','),
+      summaryRow.join(','),
+      '',
+      tradeHeaders.join(','),
+      ...tradeRows.map(r => r.join(','))
+    ];
+
+    const csvContent = lines.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedToken}_trades_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Use tolerance for near-zero highlighting: treat abs < 0.0001 as zero
   const isNegativeUnits = (units) => units < -0.0001;
 
@@ -2640,21 +2688,44 @@ function CheckerTab({ prices }) {
       {/* Token Trades Modal */}
       {selectedToken && tokenTrades && (
         <div className="modal-overlay" onClick={() => setSelectedToken(null)}>
-          <div className="modal" style={{ maxWidth: '900px' }} onClick={e => e.stopPropagation()}>
+          <div className="modal" style={{ maxWidth: '1100px' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <span className="modal-title">Trades for {selectedToken}</span>
-              <button className="modal-close" onClick={() => setSelectedToken(null)}>&times;</button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button className="btn btn-secondary btn-sm" onClick={exportTradesCSV}>
+                  Export CSV
+                </button>
+                <button className="modal-close" onClick={() => setSelectedToken(null)}>&times;</button>
+              </div>
             </div>
             <div className="modal-body">
-              <div style={{ marginBottom: '16px', padding: '12px', background: 'var(--bg-dark)', borderRadius: '8px' }}>
-                <p><strong>Summary:</strong></p>
-                <p>Buy Units: {formatNumber(tokenTrades.summary?.buy_units || 0, 6)} |
-                   Sell Units: {formatNumber(tokenTrades.summary?.sell_units || 0, 6)} |
-                   Income: {formatNumber(tokenTrades.summary?.income_units || 0, 6)}</p>
-                <p style={{ fontWeight: '700', color: 'var(--text-blue)' }}>
-                  Net Units: {formatNumber(tokenTrades.summary?.net_units || 0, 6)}
-                </p>
-                <p>Cost Basis: {formatCurrency(tokenTrades.summary?.cost_basis || 0, 2)}</p>
+              <div className="table-container" style={{ marginBottom: '16px' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Token</th>
+                      <th className="right">Buy Units</th>
+                      <th className="right">Sell Units</th>
+                      <th className="right">Income Units</th>
+                      <th className="right">Net Units</th>
+                      <th className="right">Current Value</th>
+                      <th className="right">Cost Basis</th>
+                      <th className="right">Trades</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td className="token-name">{selectedToken}</td>
+                      <td className="right">{formatNumber(tokenTrades.summary?.buy_units || 0, 4)}</td>
+                      <td className="right" style={{ color: 'var(--negative)' }}>{formatNumber(tokenTrades.summary?.sell_units || 0, 4)}</td>
+                      <td className="right" style={{ color: 'var(--text-blue)' }}>{formatNumber(tokenTrades.summary?.income_units || 0, 4)}</td>
+                      <td className="right" style={{ fontWeight: '600' }}>{formatNumber(tokenTrades.summary?.net_units || 0, 4)}</td>
+                      <td className="right" style={{ fontWeight: '600' }}>{formatCurrency(selectedHolding?.value || 0, 2)}</td>
+                      <td className="right">{formatCurrency(tokenTrades.summary?.cost_basis || 0, 2)}</td>
+                      <td className="right">{tokenTrades.trades?.length || 0}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
               <div className="table-container" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                 <table>
