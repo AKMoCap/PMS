@@ -32,6 +32,7 @@ function initialize() {
       avg_price REAL,
       total REAL,
       type TEXT NOT NULL CHECK(type IN ('Buy', 'Sell', 'Income')),
+      notes TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
@@ -57,17 +58,29 @@ function initialize() {
       month TEXT UNIQUE NOT NULL,
       gp_subs REAL DEFAULT 0,
       lp_subs REAL DEFAULT 0,
+      initial_value REAL DEFAULT 0,
       ending_value REAL DEFAULT 0,
+      motus_return REAL DEFAULT 0,
+      btc_return REAL DEFAULT 0,
+      eth_return REAL DEFAULT 0,
+      cci30_return REAL DEFAULT 0,
+      sp_ex_mega_return REAL DEFAULT 0,
+      spx_return REAL DEFAULT 0,
+      qqq_return REAL DEFAULT 0,
       fund_expenses REAL DEFAULT 0,
       mgmt_fees REAL DEFAULT 0,
       setup_costs REAL DEFAULT 0,
-      btc_start REAL DEFAULT 0,
-      eth_start REAL DEFAULT 0,
-      spx_start REAL DEFAULT 0,
-      qqq_start REAL DEFAULT 0,
-      cci30_start REAL DEFAULT 0,
-      sp_ex_mega_start REAL DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Manual prices table
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS manual_prices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token TEXT UNIQUE NOT NULL,
+      price REAL NOT NULL,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
@@ -100,6 +113,27 @@ function initialize() {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Add columns to existing tables (SQLite doesn't support IF NOT EXISTS for ALTER TABLE)
+  const alterStatements = [
+    'ALTER TABLE trades ADD COLUMN notes TEXT',
+    'ALTER TABLE perf_tracker ADD COLUMN initial_value REAL DEFAULT 0',
+    'ALTER TABLE perf_tracker ADD COLUMN motus_return REAL DEFAULT 0',
+    'ALTER TABLE perf_tracker ADD COLUMN btc_return REAL DEFAULT 0',
+    'ALTER TABLE perf_tracker ADD COLUMN eth_return REAL DEFAULT 0',
+    'ALTER TABLE perf_tracker ADD COLUMN cci30_return REAL DEFAULT 0',
+    'ALTER TABLE perf_tracker ADD COLUMN sp_ex_mega_return REAL DEFAULT 0',
+    'ALTER TABLE perf_tracker ADD COLUMN spx_return REAL DEFAULT 0',
+    'ALTER TABLE perf_tracker ADD COLUMN qqq_return REAL DEFAULT 0',
+  ];
+
+  for (const stmt of alterStatements) {
+    try {
+      database.exec(stmt);
+    } catch (e) {
+      // Column already exists - safe to ignore
+    }
+  }
 
   console.log('Database initialized successfully');
 }
