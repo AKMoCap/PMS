@@ -8,8 +8,11 @@ const API_BASE = '/api';
 const formatCurrency = (value, decimals = 2) => {
   if (value === null || value === undefined || isNaN(value)) return '$0.00';
   const num = parseFloat(value);
-  if (Math.abs(num) >= 1000000) {
-    return '$' + (num / 1000000).toFixed(2) + 'M';
+  if (Math.abs(num) >= 1e9) {
+    return '$' + (num / 1e9).toFixed(2) + 'B';
+  }
+  if (Math.abs(num) >= 1e6) {
+    return '$' + (num / 1e6).toFixed(2) + 'M';
   }
   if (Math.abs(num) >= 1000) {
     return '$' + num.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
@@ -2008,7 +2011,17 @@ function SectorWatchTab({ prices, onRefresh }) {
           </span>
         </div>
         <div className="table-container">
-          <table>
+          <table className="sector-watch-table">
+            <colgroup>
+              <col style={{ width: '8%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '13%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '17%' }} />
+              <col style={{ width: '17%' }} />
+            </colgroup>
             <thead>
               <tr>
                 <th>Token</th>
@@ -2033,7 +2046,7 @@ function SectorWatchTab({ prices, onRefresh }) {
                 tokenList.map(token => (
                   <tr key={token.symbol}>
                     <td className="token-name">{token.symbol}</td>
-                    <td>{token.name || '-'}</td>
+                    <td style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{token.name || '-'}</td>
                     <td className="right">{formatPrice(token.price)}</td>
                     <td className="right">
                       <span className={`perf-cell ${getPerformanceClass(token.percent_change_24h)}`}>
@@ -2370,7 +2383,7 @@ function UploadTab({ onRefresh }) {
 
 // ============================================================
 // Checker Tab Component - Debug calculations
-// - Updated USDC breakdown to show exits cost basis
+// - USDC = Subscriptions - Net Capital Deployed - Expenses
 // ============================================================
 function CheckerTab({ prices }) {
   const [data, setData] = useState(null);
@@ -2443,7 +2456,7 @@ function CheckerTab({ prices }) {
             <div>
               <h3 style={{ color: 'var(--text-blue)', marginBottom: '12px' }}>USDC Balance</h3>
               <p style={{ fontSize: '24px', fontWeight: '700' }}>{formatCurrency(data.calculations.usdc_balance, 2)}</p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>= Subscriptions - Cost Basis - Expenses - Exits</p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>= Subscriptions - Net Capital Deployed - Expenses</p>
             </div>
             <div>
               <h3 style={{ color: 'var(--positive)', marginBottom: '12px' }}>Total Portfolio Value</h3>
@@ -2475,7 +2488,7 @@ function CheckerTab({ prices }) {
                 <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.investors.lp_total, 2)}</td>
               </tr>
               <tr>
-                <td style={{ padding: '8px 0' }}>Minus: Total Cost Basis of Holdings</td>
+                <td style={{ padding: '8px 0' }}>Minus: Net Capital Deployed (Buys - Sells)</td>
                 <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--negative)' }}>-{formatCurrency(data.calculations.total_cost_basis, 2)}</td>
               </tr>
               <tr>
@@ -2493,10 +2506,6 @@ function CheckerTab({ prices }) {
               <tr>
                 <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>Setup Costs</td>
                 <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.expenses.setup_costs, 2)}</td>
-              </tr>
-              <tr>
-                <td style={{ padding: '8px 0' }}>Minus: Exits Cost Basis</td>
-                <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--negative)' }}>-{formatCurrency(data.calculations.exits_cost_basis, 2)}</td>
               </tr>
               <tr style={{ borderTop: '2px solid var(--border-medium)' }}>
                 <td style={{ padding: '12px 0', fontWeight: '700', color: 'var(--text-blue)' }}>= USDC Balance</td>
