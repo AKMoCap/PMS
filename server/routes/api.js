@@ -1322,9 +1322,10 @@ router.get('/checker/portfolio', (req, res) => {
     // Calculate total cost basis (excluding USDC).
     // This represents net capital deployed: buy costs minus sell proceeds.
     // Covers both active and exited positions since trades remain in the table.
-    const totalCostBasis = holdings
-      .filter(h => h.token.toUpperCase() !== 'USDC')
-      .reduce((sum, h) => sum + (h.cost_basis || 0), 0);
+    const nonUsdc = holdings.filter(h => h.token.toUpperCase() !== 'USDC');
+    const totalCostBasis = nonUsdc.reduce((sum, h) => sum + (h.cost_basis || 0), 0);
+    const totalBuy = nonUsdc.reduce((sum, h) => sum + (h.buy_total || 0), 0);
+    const totalSell = nonUsdc.reduce((sum, h) => sum + (h.sell_total || 0), 0);
 
     // USDC = Subscriptions - Net Capital Deployed - Expenses
     // Note: exits_cost_basis is NOT subtracted because trades for exited positions
@@ -1342,6 +1343,8 @@ router.get('/checker/portfolio', (req, res) => {
       },
       calculations: {
         total_subscriptions: investors.total_subscriptions || 0,
+        total_buy: totalBuy,
+        total_sell: totalSell,
         total_cost_basis: totalCostBasis,
         total_expenses: totalExpenses,
         usdc_balance: usdcBalance

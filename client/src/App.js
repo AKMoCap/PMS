@@ -2449,6 +2449,39 @@ function CheckerTab({ prices }) {
   // Add USDC
   totalPortfolioValue += data.calculations.usdc_balance;
 
+  // CSV export with full precision
+  const exportCSV = () => {
+    const headers = ['Token', 'Buy Units', 'Sell Units', 'Income Units', 'Net Units', 'Buy Total ($)', 'Sell Total ($)', 'Cost Basis ($)', 'Current Value ($)', 'Trades'];
+    const rows = holdingsWithValues.map(h => [
+      h.token,
+      h.buy_units,
+      h.sell_units,
+      h.income_units,
+      h.net_units,
+      h.buy_total,
+      h.sell_total,
+      h.cost_basis,
+      h.value.toFixed(2),
+      h.trade_count
+    ]);
+    // Add USDC row
+    rows.push(['USDC', '', '', '', data.calculations.usdc_balance, '', '', '', data.calculations.usdc_balance, '']);
+    // Add total row
+    rows.push(['TOTAL', '', '', '', '', data.calculations.total_buy, data.calculations.total_sell, data.calculations.total_cost_basis, totalPortfolioValue.toFixed(2), '']);
+
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `holdings_breakdown_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Use tolerance for near-zero highlighting: treat abs < 0.0001 as zero
+  const isNegativeUnits = (units) => units < -0.0001;
+
   return (
     <div>
       {/* Summary */}
@@ -2498,8 +2531,16 @@ function CheckerTab({ prices }) {
                 <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.investors.lp_total, 2)}</td>
               </tr>
               <tr>
-                <td style={{ padding: '8px 0' }}>Minus: Net Capital Deployed (Buys - Sells)</td>
-                <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--negative)' }}>-{formatCurrency(data.calculations.total_cost_basis, 2)}</td>
+                <td style={{ padding: '8px 0' }}>Minus: Total Buy Cost (all non-USDC tokens)</td>
+                <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--negative)' }}>-{formatCurrency(data.calculations.total_buy, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0' }}>Plus: Total Sell Proceeds (all non-USDC tokens)</td>
+                <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--positive)' }}>+{formatCurrency(data.calculations.total_sell, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>Net Capital Deployed (Buy - Sell)</td>
+                <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.calculations.total_cost_basis, 2)}</td>
               </tr>
               <tr>
                 <td style={{ padding: '8px 0' }}>Minus: Total Expenses</td>
@@ -2530,6 +2571,9 @@ function CheckerTab({ prices }) {
       <div className="card" style={{ marginBottom: '24px' }}>
         <div className="card-header">
           <span className="card-title">Holdings Breakdown ({holdingsWithValues.length} tokens)</span>
+          <button className="btn btn-secondary btn-sm" onClick={exportCSV}>
+            Export CSV
+          </button>
         </div>
         <div className="table-container">
           <table>
@@ -2540,7 +2584,6 @@ function CheckerTab({ prices }) {
                 <th className="right">Sell Units</th>
                 <th className="right">Income Units</th>
                 <th className="right">Net Units</th>
-                <th className="right">Price</th>
                 <th className="right">Current Value</th>
                 <th className="right">Cost Basis</th>
                 <th className="right">Trades</th>
@@ -2549,15 +2592,14 @@ function CheckerTab({ prices }) {
             </thead>
             <tbody>
               {holdingsWithValues.map((h, idx) => (
-                <tr key={idx} style={{ background: h.net_units < 0 ? 'rgba(255,0,0,0.1)' : 'transparent' }}>
+                <tr key={idx} style={{ background: isNegativeUnits(h.net_units) ? 'rgba(255,0,0,0.1)' : 'transparent' }}>
                   <td className="token-name">{h.token}</td>
                   <td className="right">{formatNumber(h.buy_units, 4)}</td>
                   <td className="right" style={{ color: 'var(--negative)' }}>{formatNumber(h.sell_units, 4)}</td>
                   <td className="right" style={{ color: 'var(--text-blue)' }}>{formatNumber(h.income_units, 4)}</td>
-                  <td className="right" style={{ fontWeight: '600', color: h.net_units < 0 ? 'var(--negative)' : 'inherit' }}>
+                  <td className="right" style={{ fontWeight: '600', color: isNegativeUnits(h.net_units) ? 'var(--negative)' : 'inherit' }}>
                     {formatNumber(h.net_units, 4)}
                   </td>
-                  <td className="right">{formatPrice(h.price)}</td>
                   <td className="right" style={{ fontWeight: '600' }}>{formatCurrency(h.value, 2)}</td>
                   <td className="right">{formatCurrency(h.cost_basis, 2)}</td>
                   <td className="right">{h.trade_count}</td>
@@ -2577,14 +2619,13 @@ function CheckerTab({ prices }) {
                 <td className="right">-</td>
                 <td className="right">-</td>
                 <td className="right">{formatNumber(data.calculations.usdc_balance, 2)}</td>
-                <td className="right">$1.00</td>
                 <td className="right">{formatCurrency(data.calculations.usdc_balance, 2)}</td>
                 <td className="right">-</td>
                 <td className="right">-</td>
                 <td>-</td>
               </tr>
               <tr style={{ background: 'var(--primary-blue-dim)', fontWeight: '700' }}>
-                <td colSpan="6">TOTAL PORTFOLIO VALUE</td>
+                <td colSpan="5">TOTAL PORTFOLIO VALUE</td>
                 <td className="right" style={{ fontSize: '16px', color: 'var(--text-blue)' }}>
                   {formatCurrency(totalPortfolioValue, 2)}
                 </td>
