@@ -630,3 +630,108 @@ tr:hover {
 .comparison-value.negative {
   color: var(--negative);
 }
+
+/* Compact table (20% thinner rows for Trades tab) */
+.compact-table th {
+  padding: 10px 16px;
+}
+
+.compact-table td {
+  padding: 10px 16px;
+}
+
+/* Filter bar */
+.filter-bar {
+  display: flex;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-dark);
+  background: var(--bg-card);
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.filter-input {
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-medium);
+  border-radius: 4px;
+  color: var(--text-primary);
+  min-width: 100px;
+}
+
+.filter-input:focus {
+  outline: none;
+  border-color: var(--primary-blue);
+}
+
+.filter-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Toggle label for Small Balances */
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.toggle-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-blue);
+  cursor: pointer;
+}
+
+.toggle-text {
+  white-space: nowrap;
+}
+
+/* Sortable column headers */
+.sortable-header {
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.2s;
+}
+
+.sortable-header:hover {
+  color: var(--text-blue);
+}
+
+/* Set Price button (inline in token cell) */
+.btn-set-price {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--primary-blue-dim);
+  color: var(--text-blue);
+  border: 1px solid var(--primary-blue);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-set-price:hover {
+  background: var(--primary-blue);
+  color: #000;
+}

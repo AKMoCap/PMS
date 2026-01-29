@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 
 // API base URL
@@ -46,6 +46,17 @@ const getPerformanceClass = (value) => {
   return 'perf-strong-negative';
 };
 
+// Format date from YYYY-MM-DD to DD/MM/YY
+const formatDate = (dateStr) => {
+  if (!dateStr) return '-';
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const [y, m, d] = parts;
+    return `${d}/${m}/${y.slice(-2)}`;
+  }
+  return dateStr;
+};
+
 function App() {
   const [activeTab, setActiveTab] = useState('portfolio');
   const [prices, setPrices] = useState({});
@@ -54,21 +65,22 @@ function App() {
   const [investors, setInvestors] = useState([]);
   const [perfTracker, setPerfTracker] = useState([]);
   const [exits, setExits] = useState([]);
-  const [sectorWatch, setSectorWatch] = useState([]);
   const [usdcData, setUsdcData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [manualPrices, setManualPrices] = useState([]);
 
   // Fetch all data
   const fetchData = useCallback(async () => {
     try {
-      const [pricesRes, tradesRes, holdingsRes, investorsRes, perfRes, exitsRes, usdcRes] = await Promise.all([
+      const [pricesRes, tradesRes, holdingsRes, investorsRes, perfRes, exitsRes, usdcRes, manualRes] = await Promise.all([
         axios.get(`${API_BASE}/prices`).catch(() => ({ data: {} })),
         axios.get(`${API_BASE}/trades`),
         axios.get(`${API_BASE}/portfolio`),
         axios.get(`${API_BASE}/investors`),
         axios.get(`${API_BASE}/perf-tracker`),
         axios.get(`${API_BASE}/exits`),
-        axios.get(`${API_BASE}/portfolio/usdc`)
+        axios.get(`${API_BASE}/portfolio/usdc`),
+        axios.get(`${API_BASE}/manual-prices`).catch(() => ({ data: [] }))
       ]);
 
       setPrices(pricesRes.data || {});
@@ -78,6 +90,7 @@ function App() {
       setPerfTracker(perfRes.data || []);
       setExits(exitsRes.data || []);
       setUsdcData(usdcRes.data || null);
+      setManualPrices(manualRes.data || []);
       setLoading(false);
     } catch (error) {
       console.error('Error fetching data:', error);
@@ -97,12 +110,30 @@ function App() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
+  // Build merged prices (CMC + manual)
+  const mergedPrices = useMemo(() => {
+    const merged = { ...prices };
+    (manualPrices || []).forEach(mp => {
+      if (!merged[mp.token] || !merged[mp.token].price) {
+        merged[mp.token] = {
+          price: mp.price,
+          isManual: true,
+          percent_change_24h: null,
+          percent_change_7d: null,
+          percent_change_30d: null,
+          percent_change_60d: null
+        };
+      }
+    });
+    return merged;
+  }, [prices, manualPrices]);
+
   // Calculate portfolio value
   const calculatePortfolioValue = () => {
     let totalValue = 0;
     holdings.forEach(holding => {
       const token = holding.token.toUpperCase();
-      const price = prices[token]?.price || 0;
+      const price = mergedPrices[token]?.price || 0;
       totalValue += holding.total_units * price;
     });
     // Add USDC balance
@@ -207,7 +238,8 @@ function App() {
             {activeTab === 'portfolio' && (
               <PortfolioTab
                 holdings={holdings}
-                prices={prices}
+                prices={mergedPrices}
+                cmcPrices={prices}
                 usdcData={usdcData}
                 portfolioValue={portfolioValue}
                 onRefresh={fetchData}
@@ -240,7 +272,7 @@ function App() {
             )}
             {activeTab === 'sector-watch' && (
               <SectorWatchTab
-                prices={prices}
+                prices={mergedPrices}
                 onRefresh={fetchData}
               />
             )}
@@ -251,7 +283,7 @@ function App() {
             )}
             {activeTab === 'checker' && (
               <CheckerTab
-                prices={prices}
+                prices={mergedPrices}
               />
             )}
           </>
@@ -261,54 +293,196 @@ function App() {
   );
 }
 
+// ============================================================
 // Portfolio Tab Component
-function PortfolioTab({ holdings, prices, usdcData, portfolioValue, onRefresh }) {
+// - Manual price entry for unpriced tokens
+// - Show "-" for performance columns without CMC data
+// - Small Balances toggle (hide <$1,000 by default)
+// - Sortable columns
+// ============================================================
+function PortfolioTab({ holdings, prices, cmcPrices, usdcData, portfolioValue, onRefresh }) {
+  const [showSmallBalances, setShowSmallBalances] = useState(false);
+  const [sortConfig, setSortConfig] = useState({ key: 'weight', direction: 'desc' });
+  const [showPriceModal, setShowPriceModal] = useState(false);
+  const [priceModalToken, setPriceModalToken] = useState('');
+  const [priceModalValue, setPriceModalValue] = useState('');
+
   // Prepare holdings with current values
-  const enrichedHoldings = holdings
-    .filter(h => h.token.toUpperCase() !== 'USDC')
-    .map(holding => {
-      const token = holding.token.toUpperCase();
-      const priceData = prices[token] || {};
-      const currentPrice = priceData.price || 0;
-      const currentValue = holding.total_units * currentPrice;
-      const pnl = currentValue - holding.cost_basis;
-      const weight = portfolioValue > 0 ? (currentValue / portfolioValue) * 100 : 0;
+  const enrichedHoldings = useMemo(() => {
+    const items = holdings
+      .filter(h => h.token.toUpperCase() !== 'USDC')
+      .map(holding => {
+        const token = holding.token.toUpperCase();
+        const priceData = prices[token] || {};
+        const currentPrice = priceData.price || 0;
+        const currentValue = holding.total_units * currentPrice;
+        const pnl = currentValue - holding.cost_basis;
+        const weight = portfolioValue > 0 ? (currentValue / portfolioValue) * 100 : 0;
+        const hasCMCData = !!(cmcPrices[token]?.price);
 
-      return {
-        ...holding,
-        currentPrice,
-        currentValue,
-        pnl,
-        weight,
-        percent_change_24h: priceData.percent_change_24h || 0,
-        percent_change_7d: priceData.percent_change_7d || 0,
-        percent_change_30d: priceData.percent_change_30d || 0,
-        percent_change_60d: priceData.percent_change_60d || 0
-      };
-    })
-    .sort((a, b) => b.currentValue - a.currentValue);
+        return {
+          ...holding,
+          currentPrice,
+          currentValue,
+          pnl,
+          weight,
+          hasCMCData,
+          isManualPrice: priceData.isManual || false,
+          percent_change_24h: priceData.percent_change_24h,
+          percent_change_7d: priceData.percent_change_7d,
+          percent_change_30d: priceData.percent_change_30d,
+          percent_change_60d: priceData.percent_change_60d
+        };
+      });
 
-  // Add USDC
-  if (usdcData && usdcData.usdc_balance !== 0) {
-    const usdcWeight = portfolioValue > 0 ? (usdcData.usdc_balance / portfolioValue) * 100 : 0;
-    enrichedHoldings.push({
-      token: 'USDC',
-      total_units: usdcData.usdc_balance,
-      cost_basis: usdcData.usdc_balance,
-      currentPrice: 1,
-      currentValue: usdcData.usdc_balance,
-      pnl: 0,
-      weight: usdcWeight,
-      percent_change_24h: 0,
-      percent_change_7d: 0,
-      percent_change_30d: 0,
-      percent_change_60d: 0
+    // Add USDC
+    if (usdcData && usdcData.usdc_balance !== 0) {
+      const usdcWeight = portfolioValue > 0 ? (usdcData.usdc_balance / portfolioValue) * 100 : 0;
+      items.push({
+        token: 'USDC',
+        total_units: usdcData.usdc_balance,
+        cost_basis: usdcData.usdc_balance,
+        currentPrice: 1,
+        currentValue: usdcData.usdc_balance,
+        pnl: 0,
+        weight: usdcWeight,
+        hasCMCData: true,
+        isManualPrice: false,
+        percent_change_24h: 0,
+        percent_change_7d: 0,
+        percent_change_30d: 0,
+        percent_change_60d: 0
+      });
+    }
+
+    return items;
+  }, [holdings, prices, cmcPrices, usdcData, portfolioValue]);
+
+  // Filter small balances
+  const filteredHoldings = useMemo(() => {
+    if (showSmallBalances) return enrichedHoldings;
+    return enrichedHoldings.filter(h => Math.abs(h.currentValue) >= 1000);
+  }, [enrichedHoldings, showSmallBalances]);
+
+  // Sort holdings
+  const sortedHoldings = useMemo(() => {
+    const sorted = [...filteredHoldings];
+    const { key, direction } = sortConfig;
+    const multiplier = direction === 'desc' ? -1 : 1;
+
+    sorted.sort((a, b) => {
+      let aVal, bVal;
+      switch (key) {
+        case 'token':
+          return multiplier * a.token.localeCompare(b.token);
+        case 'currentPrice':
+          aVal = a.currentPrice || 0;
+          bVal = b.currentPrice || 0;
+          break;
+        case 'currentValue':
+          aVal = a.currentValue || 0;
+          bVal = b.currentValue || 0;
+          break;
+        case 'weight':
+          aVal = a.weight || 0;
+          bVal = b.weight || 0;
+          break;
+        case 'percent_change_24h':
+          aVal = a.percent_change_24h || 0;
+          bVal = b.percent_change_24h || 0;
+          break;
+        case 'percent_change_7d':
+          aVal = a.percent_change_7d || 0;
+          bVal = b.percent_change_7d || 0;
+          break;
+        case 'percent_change_30d':
+          aVal = a.percent_change_30d || 0;
+          bVal = b.percent_change_30d || 0;
+          break;
+        case 'percent_change_60d':
+          aVal = a.percent_change_60d || 0;
+          bVal = b.percent_change_60d || 0;
+          break;
+        case 'pnl':
+          aVal = a.pnl || 0;
+          bVal = b.pnl || 0;
+          break;
+        case 'cost_basis':
+          aVal = a.cost_basis || 0;
+          bVal = b.cost_basis || 0;
+          break;
+        case 'total_units':
+          aVal = a.total_units || 0;
+          bVal = b.total_units || 0;
+          break;
+        default:
+          aVal = a.weight || 0;
+          bVal = b.weight || 0;
+      }
+      return multiplier * (aVal - bVal);
     });
-  }
+
+    return sorted;
+  }, [filteredHoldings, sortConfig]);
+
+  const handleSort = (key) => {
+    setSortConfig(prev => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'desc' ? 'asc' : 'desc' };
+      }
+      return { key, direction: 'desc' };
+    });
+  };
+
+  const getSortIndicator = (key) => {
+    if (sortConfig.key !== key) return '';
+    return sortConfig.direction === 'desc' ? ' \u25BC' : ' \u25B2';
+  };
+
+  const handleSetManualPrice = async () => {
+    if (!priceModalToken || !priceModalValue) return;
+    try {
+      await axios.post(`${API_BASE}/manual-prices`, {
+        token: priceModalToken,
+        price: parseFloat(priceModalValue)
+      });
+      setShowPriceModal(false);
+      setPriceModalToken('');
+      setPriceModalValue('');
+      onRefresh();
+    } catch (error) {
+      console.error('Error setting manual price:', error);
+      alert('Error setting manual price');
+    }
+  };
+
+  const openPriceModal = (token) => {
+    setPriceModalToken(token);
+    setPriceModalValue('');
+    setShowPriceModal(true);
+  };
 
   // Calculate totals
   const totalCostBasis = enrichedHoldings.reduce((sum, h) => sum + (h.cost_basis || 0), 0);
   const totalPnl = enrichedHoldings.reduce((sum, h) => sum + (h.pnl || 0), 0);
+
+  const renderPerfCell = (holding, field) => {
+    if (!holding.hasCMCData || holding.token === 'USDC') {
+      if (holding.token === 'USDC') {
+        return <span className="perf-cell">-</span>;
+      }
+      return <span className="perf-cell" style={{ color: 'var(--text-muted)' }}>-</span>;
+    }
+    const val = holding[field];
+    if (val === null || val === undefined) {
+      return <span className="perf-cell" style={{ color: 'var(--text-muted)' }}>-</span>;
+    }
+    return (
+      <span className={`perf-cell ${getPerformanceClass(val)}`}>
+        {formatPercent(val)}
+      </span>
+    );
+  };
 
   return (
     <div>
@@ -338,33 +512,85 @@ function PortfolioTab({ holdings, prices, usdcData, portfolioValue, onRefresh })
       <div className="card">
         <div className="card-header">
           <span className="card-title">Holdings</span>
-          <button className="btn btn-secondary btn-sm" onClick={onRefresh}>
-            Refresh
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            <label className="toggle-label">
+              <input
+                type="checkbox"
+                checked={showSmallBalances}
+                onChange={(e) => setShowSmallBalances(e.target.checked)}
+              />
+              <span className="toggle-text">Small Balances</span>
+            </label>
+            <button className="btn btn-secondary btn-sm" onClick={onRefresh}>
+              Refresh
+            </button>
+          </div>
         </div>
         <div className="table-container">
           <table>
             <thead>
               <tr>
-                <th>Token</th>
-                <th className="right">Price</th>
-                <th className="right">Value</th>
-                <th className="right">Weight</th>
-                <th className="right">24Hr</th>
+                <th className="sortable-header" onClick={() => handleSort('token')}>
+                  Token{getSortIndicator('token')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('currentPrice')}>
+                  Price{getSortIndicator('currentPrice')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('currentValue')}>
+                  Value{getSortIndicator('currentValue')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('weight')}>
+                  Weight{getSortIndicator('weight')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('percent_change_24h')}>
+                  24Hr{getSortIndicator('percent_change_24h')}
+                </th>
                 <th className="right">MTD</th>
                 <th className="right">YTD</th>
-                <th className="right">7D%</th>
-                <th className="right">30D%</th>
-                <th className="right">60D%</th>
-                <th className="right">P&L</th>
-                <th className="right">Cost Basis</th>
-                <th className="right">Units</th>
+                <th className="right sortable-header" onClick={() => handleSort('percent_change_7d')}>
+                  7D%{getSortIndicator('percent_change_7d')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('percent_change_30d')}>
+                  30D%{getSortIndicator('percent_change_30d')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('percent_change_60d')}>
+                  60D%{getSortIndicator('percent_change_60d')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('pnl')}>
+                  P&L{getSortIndicator('pnl')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('cost_basis')}>
+                  Cost Basis{getSortIndicator('cost_basis')}
+                </th>
+                <th className="right sortable-header" onClick={() => handleSort('total_units')}>
+                  Units{getSortIndicator('total_units')}
+                </th>
               </tr>
             </thead>
             <tbody>
-              {enrichedHoldings.map((holding, idx) => (
+              {sortedHoldings.map((holding, idx) => (
                 <tr key={idx}>
-                  <td className="token-name">{holding.token}</td>
+                  <td className="token-name">
+                    {holding.token}
+                    {holding.currentPrice === 0 && holding.token !== 'USDC' && (
+                      <button
+                        className="btn-set-price"
+                        onClick={() => openPriceModal(holding.token)}
+                        title="Set manual price"
+                      >
+                        Set Price
+                      </button>
+                    )}
+                    {holding.isManualPrice && (
+                      <button
+                        className="btn-set-price"
+                        onClick={() => openPriceModal(holding.token)}
+                        title="Update manual price"
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </td>
                   <td className="right">{formatPrice(holding.currentPrice)}</td>
                   <td className="right">{formatCurrency(holding.currentValue)}</td>
                   <td className="right">
@@ -378,32 +604,12 @@ function PortfolioTab({ holdings, prices, usdcData, portfolioValue, onRefresh })
                       <div className="weight-value">{formatPercent(holding.weight)}</div>
                     </div>
                   </td>
-                  <td className="right">
-                    <span className={`perf-cell ${getPerformanceClass(holding.percent_change_24h)}`}>
-                      {formatPercent(holding.percent_change_24h)}
-                    </span>
-                  </td>
-                  <td className="right">
-                    <span className="perf-cell">-</span>
-                  </td>
-                  <td className="right">
-                    <span className="perf-cell">-</span>
-                  </td>
-                  <td className="right">
-                    <span className={`perf-cell ${getPerformanceClass(holding.percent_change_7d)}`}>
-                      {formatPercent(holding.percent_change_7d)}
-                    </span>
-                  </td>
-                  <td className="right">
-                    <span className={`perf-cell ${getPerformanceClass(holding.percent_change_30d)}`}>
-                      {formatPercent(holding.percent_change_30d)}
-                    </span>
-                  </td>
-                  <td className="right">
-                    <span className={`perf-cell ${getPerformanceClass(holding.percent_change_60d)}`}>
-                      {formatPercent(holding.percent_change_60d)}
-                    </span>
-                  </td>
+                  <td className="right">{renderPerfCell(holding, 'percent_change_24h')}</td>
+                  <td className="right"><span className="perf-cell" style={{ color: 'var(--text-muted)' }}>-</span></td>
+                  <td className="right"><span className="perf-cell" style={{ color: 'var(--text-muted)' }}>-</span></td>
+                  <td className="right">{renderPerfCell(holding, 'percent_change_7d')}</td>
+                  <td className="right">{renderPerfCell(holding, 'percent_change_30d')}</td>
+                  <td className="right">{renderPerfCell(holding, 'percent_change_60d')}</td>
                   <td className={`right ${holding.pnl >= 0 ? 'positive' : 'negative'}`}>
                     {formatCurrency(holding.pnl)}
                   </td>
@@ -415,11 +621,74 @@ function PortfolioTab({ holdings, prices, usdcData, portfolioValue, onRefresh })
           </table>
         </div>
       </div>
+
+      {/* Manual Price Modal */}
+      {showPriceModal && (
+        <div className="modal-overlay" onClick={() => setShowPriceModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span className="modal-title">Set Manual Price</span>
+              <button className="modal-close" onClick={() => setShowPriceModal(false)}>
+                &times;
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Token</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={priceModalToken}
+                  readOnly
+                  style={{ background: 'var(--border-dark)' }}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Price (USD) *</label>
+                <input
+                  type="number"
+                  step="any"
+                  className="form-input"
+                  value={priceModalValue}
+                  onChange={(e) => setPriceModalValue(e.target.value)}
+                  placeholder="Enter current price"
+                  autoFocus
+                />
+              </div>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                This price will be used when CoinMarketCap doesn't have data for this token.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowPriceModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleSetManualPrice}
+                disabled={!priceModalValue}
+              >
+                Save Price
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
+// ============================================================
 // Trades Tab Component
+// - Notes column
+// - Date/Token/Type filters
+// - CSV export
+// - Compact rows (20% thinner)
+// ============================================================
 function TradesTab({ trades, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingTrade, setEditingTrade] = useState(null);
@@ -429,8 +698,25 @@ function TradesTab({ trades, onRefresh }) {
     units: '',
     avg_price: '',
     total: '',
-    type: 'Buy'
+    type: 'Buy',
+    notes: ''
   });
+  const [dateFilter, setDateFilter] = useState('');
+  const [tokenFilter, setTokenFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+
+  // Filter trades
+  const filteredTrades = useMemo(() => {
+    return trades.filter(trade => {
+      if (dateFilter) {
+        const displayDate = formatDate(trade.date);
+        if (!trade.date.includes(dateFilter) && !displayDate.includes(dateFilter)) return false;
+      }
+      if (tokenFilter && !trade.token.toLowerCase().includes(tokenFilter.toLowerCase())) return false;
+      if (typeFilter && trade.type !== typeFilter) return false;
+      return true;
+    });
+  }, [trades, dateFilter, tokenFilter, typeFilter]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -456,7 +742,8 @@ function TradesTab({ trades, onRefresh }) {
         units: '',
         avg_price: '',
         total: '',
-        type: 'Buy'
+        type: 'Buy',
+        notes: ''
       });
       onRefresh();
     } catch (error) {
@@ -473,7 +760,8 @@ function TradesTab({ trades, onRefresh }) {
       units: trade.units.toString(),
       avg_price: trade.avg_price?.toString() || '',
       total: trade.total?.toString() || '',
-      type: trade.type
+      type: trade.type,
+      notes: trade.notes || ''
     });
     setShowModal(true);
   };
@@ -490,31 +778,79 @@ function TradesTab({ trades, onRefresh }) {
     }
   };
 
+  const handleExportCSV = () => {
+    window.location.href = `${API_BASE}/trades/export/csv`;
+  };
+
   return (
     <div>
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Trade History</span>
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              setEditingTrade(null);
-              setFormData({
-                date: new Date().toISOString().split('T')[0],
-                token: '',
-                units: '',
-                avg_price: '',
-                total: '',
-                type: 'Buy'
-              });
-              setShowModal(true);
-            }}
-          >
-            + Enter Trade
-          </button>
+          <span className="card-title">Trade History ({filteredTrades.length})</span>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button className="btn btn-secondary btn-sm" onClick={handleExportCSV}>
+              Export CSV
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setEditingTrade(null);
+                setFormData({
+                  date: new Date().toISOString().split('T')[0],
+                  token: '',
+                  units: '',
+                  avg_price: '',
+                  total: '',
+                  type: 'Buy',
+                  notes: ''
+                });
+                setShowModal(true);
+              }}
+            >
+              + Enter Trade
+            </button>
+          </div>
         </div>
+
+        {/* Filters */}
+        <div className="filter-bar">
+          <div className="filter-group">
+            <label className="filter-label">Date</label>
+            <input
+              type="text"
+              className="filter-input"
+              placeholder="e.g. 01/06/22"
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+            />
+          </div>
+          <div className="filter-group">
+            <label className="filter-label">Token</label>
+            <input
+              type="text"
+              className="filter-input"
+              placeholder="e.g. BTC"
+              value={tokenFilter}
+              onChange={(e) => setTokenFilter(e.target.value)}
+            />
+          </div>
+          <div className="filter-group">
+            <label className="filter-label">Type</label>
+            <select
+              className="filter-input"
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+            >
+              <option value="">All</option>
+              <option value="Buy">Buy</option>
+              <option value="Sell">Sell</option>
+              <option value="Income">Income</option>
+            </select>
+          </div>
+        </div>
+
         <div className="table-container">
-          <table>
+          <table className="compact-table">
             <thead>
               <tr>
                 <th>Date</th>
@@ -523,21 +859,22 @@ function TradesTab({ trades, onRefresh }) {
                 <th className="right">Avg Price</th>
                 <th className="right">Total</th>
                 <th>Type</th>
+                <th>Notes</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {trades.length === 0 ? (
+              {filteredTrades.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="empty-state">
-                    <div className="empty-state-title">No trades yet</div>
-                    <div>Click "Enter Trade" to add your first trade</div>
+                  <td colSpan="8" className="empty-state">
+                    <div className="empty-state-title">No trades found</div>
+                    <div>{trades.length > 0 ? 'Try adjusting your filters' : 'Click "Enter Trade" to add your first trade'}</div>
                   </td>
                 </tr>
               ) : (
-                trades.map(trade => (
+                filteredTrades.map(trade => (
                   <tr key={trade.id}>
-                    <td>{trade.date}</td>
+                    <td>{formatDate(trade.date)}</td>
                     <td className="token-name">{trade.token}</td>
                     <td className="right">{formatNumber(trade.units, 4)}</td>
                     <td className="right">{formatPrice(trade.avg_price)}</td>
@@ -546,6 +883,9 @@ function TradesTab({ trades, onRefresh }) {
                       <span className={`badge badge-${trade.type.toLowerCase()}`}>
                         {trade.type}
                       </span>
+                    </td>
+                    <td style={{ maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {trade.notes || ''}
                     </td>
                     <td>
                       <div className="actions">
@@ -659,6 +999,16 @@ function TradesTab({ trades, onRefresh }) {
                     />
                   </div>
                 </div>
+                <div className="form-group">
+                  <label className="form-label">Notes</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={formData.notes}
+                    onChange={e => setFormData({ ...formData, notes: e.target.value })}
+                    placeholder="Optional notes"
+                  />
+                </div>
                 <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                   Enter either Avg Price or Total - the other will be calculated automatically.
                 </p>
@@ -683,7 +1033,12 @@ function TradesTab({ trades, onRefresh }) {
   );
 }
 
+// ============================================================
 // Perf Tracker Tab Component
+// - Display uploaded historical data with all return columns
+// - Columns: MONTH, GP SUBS, LP SUBS, INITIAL VALUE, END/LIVE VALUE,
+//            MOTUS, BTC, ETH, CCI30, S&PexMEGA, SPX, QQQ
+// ============================================================
 function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
@@ -691,52 +1046,23 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
     month: '',
     gp_subs: '',
     lp_subs: '',
+    initial_value: '',
     ending_value: '',
+    motus_return: '',
+    btc_return: '',
+    eth_return: '',
+    cci30_return: '',
+    sp_ex_mega_return: '',
+    spx_return: '',
+    qqq_return: '',
     fund_expenses: '',
     mgmt_fees: '',
     setup_costs: ''
   });
 
-  // Calculate performance metrics for each month
-  const calculatePerformance = () => {
-    const sorted = [...perfTracker].sort((a, b) => a.month.localeCompare(b.month));
-    let runningTotal = 0;
-
-    return sorted.map((record, idx) => {
-      // Get subscriptions for this month
-      const monthSubs = investors.filter(i => {
-        const invMonth = i.month;
-        return invMonth === record.month;
-      });
-
-      const gpSubs = monthSubs.filter(i => i.type === 'GP').reduce((sum, i) => sum + i.amount, 0);
-      const lpSubs = monthSubs.filter(i => i.type === 'LP').reduce((sum, i) => sum + i.amount, 0);
-
-      // Calculate initial value
-      const prevEnding = idx > 0 ? sorted[idx - 1].ending_value : 0;
-      const expenses = (record.fund_expenses || 0) + (record.mgmt_fees || 0) + (record.setup_costs || 0);
-      const initialValue = prevEnding + gpSubs + lpSubs - expenses;
-
-      // Calculate return
-      const monthReturn = initialValue > 0 ? ((record.ending_value / initialValue) - 1) * 100 : 0;
-
-      // Update running total for cumulative return
-      if (idx === 0) {
-        runningTotal = gpSubs + lpSubs;
-      }
-
-      return {
-        ...record,
-        calculated_gp_subs: gpSubs,
-        calculated_lp_subs: lpSubs,
-        initial_value: initialValue,
-        month_return: monthReturn,
-        expenses
-      };
-    });
-  };
-
-  const enrichedData = calculatePerformance();
+  const sortedData = useMemo(() => {
+    return [...perfTracker].sort((a, b) => a.month.localeCompare(b.month));
+  }, [perfTracker]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -745,7 +1071,15 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
         month: formData.month,
         gp_subs: parseFloat(formData.gp_subs) || 0,
         lp_subs: parseFloat(formData.lp_subs) || 0,
+        initial_value: parseFloat(formData.initial_value) || 0,
         ending_value: parseFloat(formData.ending_value) || 0,
+        motus_return: parseFloat(formData.motus_return) || 0,
+        btc_return: parseFloat(formData.btc_return) || 0,
+        eth_return: parseFloat(formData.eth_return) || 0,
+        cci30_return: parseFloat(formData.cci30_return) || 0,
+        sp_ex_mega_return: parseFloat(formData.sp_ex_mega_return) || 0,
+        spx_return: parseFloat(formData.spx_return) || 0,
+        qqq_return: parseFloat(formData.qqq_return) || 0,
         fund_expenses: parseFloat(formData.fund_expenses) || 0,
         mgmt_fees: parseFloat(formData.mgmt_fees) || 0,
         setup_costs: parseFloat(formData.setup_costs) || 0
@@ -763,7 +1097,15 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
         month: '',
         gp_subs: '',
         lp_subs: '',
+        initial_value: '',
         ending_value: '',
+        motus_return: '',
+        btc_return: '',
+        eth_return: '',
+        cci30_return: '',
+        sp_ex_mega_return: '',
+        spx_return: '',
+        qqq_return: '',
         fund_expenses: '',
         mgmt_fees: '',
         setup_costs: ''
@@ -781,7 +1123,15 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
       month: record.month,
       gp_subs: record.gp_subs?.toString() || '',
       lp_subs: record.lp_subs?.toString() || '',
+      initial_value: record.initial_value?.toString() || '',
       ending_value: record.ending_value?.toString() || '',
+      motus_return: record.motus_return?.toString() || '',
+      btc_return: record.btc_return?.toString() || '',
+      eth_return: record.eth_return?.toString() || '',
+      cci30_return: record.cci30_return?.toString() || '',
+      sp_ex_mega_return: record.sp_ex_mega_return?.toString() || '',
+      spx_return: record.spx_return?.toString() || '',
+      qqq_return: record.qqq_return?.toString() || '',
       fund_expenses: record.fund_expenses?.toString() || '',
       mgmt_fees: record.mgmt_fees?.toString() || '',
       setup_costs: record.setup_costs?.toString() || ''
@@ -800,6 +1150,31 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
     }
   };
 
+  // Format month display: "2022-06" -> "Jun-22"
+  const formatMonth = (monthStr) => {
+    if (!monthStr) return '-';
+    const parts = monthStr.split('-');
+    if (parts.length === 2) {
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthIdx = parseInt(parts[1]) - 1;
+      if (monthIdx >= 0 && monthIdx < 12) {
+        return `${monthNames[monthIdx]}-${parts[0].slice(-2)}`;
+      }
+    }
+    return monthStr;
+  };
+
+  const renderReturnCell = (value) => {
+    if (value === null || value === undefined || value === 0) {
+      return <span className="perf-cell" style={{ color: 'var(--text-muted)' }}>-</span>;
+    }
+    return (
+      <span className={`perf-cell ${getPerformanceClass(value)}`}>
+        {formatPercent(value)}
+      </span>
+    );
+  };
+
   return (
     <div>
       <div className="card">
@@ -813,7 +1188,15 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
                 month: new Date().toISOString().slice(0, 7),
                 gp_subs: '',
                 lp_subs: '',
+                initial_value: '',
                 ending_value: '',
+                motus_return: '',
+                btc_return: '',
+                eth_return: '',
+                cci30_return: '',
+                sp_ex_mega_return: '',
+                spx_return: '',
+                qqq_return: '',
                 fund_expenses: '',
                 mgmt_fees: '',
                 setup_costs: ''
@@ -832,38 +1215,40 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
                 <th className="right">GP Subs</th>
                 <th className="right">LP Subs</th>
                 <th className="right">Initial Value</th>
-                <th className="right">Ending Value</th>
-                <th className="right">Return</th>
-                <th className="right">Fund Exp</th>
-                <th className="right">Mgmt Fees</th>
-                <th className="right">Setup Costs</th>
+                <th className="right">End/Live Value</th>
+                <th className="right">Motus</th>
+                <th className="right">BTC</th>
+                <th className="right">ETH</th>
+                <th className="right">CCI30</th>
+                <th className="right">S&PexMEGA</th>
+                <th className="right">SPX</th>
+                <th className="right">QQQ</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {enrichedData.length === 0 ? (
+              {sortedData.length === 0 ? (
                 <tr>
-                  <td colSpan="10" className="empty-state">
+                  <td colSpan="13" className="empty-state">
                     <div className="empty-state-title">No performance records</div>
-                    <div>Click "Add Month" to start tracking</div>
+                    <div>Upload data via the Upload tab or click "Add Month" to start tracking</div>
                   </td>
                 </tr>
               ) : (
-                enrichedData.map(record => (
+                sortedData.map(record => (
                   <tr key={record.id}>
-                    <td>{record.month}</td>
-                    <td className="right">{formatCurrency(record.calculated_gp_subs, 0)}</td>
-                    <td className="right">{formatCurrency(record.calculated_lp_subs, 0)}</td>
-                    <td className="right">{formatCurrency(record.initial_value, 0)}</td>
-                    <td className="right">{formatCurrency(record.ending_value, 0)}</td>
-                    <td className="right">
-                      <span className={`perf-cell ${getPerformanceClass(record.month_return)}`}>
-                        {formatPercent(record.month_return)}
-                      </span>
-                    </td>
-                    <td className="right">{formatCurrency(record.fund_expenses, 0)}</td>
-                    <td className="right">{formatCurrency(record.mgmt_fees, 0)}</td>
-                    <td className="right">{formatCurrency(record.setup_costs, 0)}</td>
+                    <td style={{ fontWeight: '600' }}>{formatMonth(record.month)}</td>
+                    <td className="right">{record.gp_subs ? formatCurrency(record.gp_subs, 0) : '-'}</td>
+                    <td className="right">{record.lp_subs ? formatCurrency(record.lp_subs, 0) : '-'}</td>
+                    <td className="right">{record.initial_value ? formatCurrency(record.initial_value, 0) : '-'}</td>
+                    <td className="right">{record.ending_value ? formatCurrency(record.ending_value, 0) : '-'}</td>
+                    <td className="right">{renderReturnCell(record.motus_return)}</td>
+                    <td className="right">{renderReturnCell(record.btc_return)}</td>
+                    <td className="right">{renderReturnCell(record.eth_return)}</td>
+                    <td className="right">{renderReturnCell(record.cci30_return)}</td>
+                    <td className="right">{renderReturnCell(record.sp_ex_mega_return)}</td>
+                    <td className="right">{renderReturnCell(record.spx_return)}</td>
+                    <td className="right">{renderReturnCell(record.qqq_return)}</td>
                     <td>
                       <div className="actions">
                         <button
@@ -891,7 +1276,7 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
       {/* Perf Tracker Modal */}
       {showModal && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
+          <div className="modal" style={{ maxWidth: '600px' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <span className="modal-title">
                 {editingRecord ? 'Edit Performance Record' : 'Add Performance Record'}
@@ -912,52 +1297,117 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
                     required
                   />
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Ending Portfolio Value *</label>
-                  <input
-                    type="number"
-                    step="any"
-                    className="form-input"
-                    value={formData.ending_value}
-                    onChange={e => setFormData({ ...formData, ending_value: e.target.value })}
-                    placeholder="Portfolio value at month end"
-                    required
-                  />
-                </div>
                 <div className="form-row">
                   <div className="form-group">
-                    <label className="form-label">Fund Expenses</label>
+                    <label className="form-label">GP Subs</label>
                     <input
                       type="number"
                       step="any"
                       className="form-input"
-                      value={formData.fund_expenses}
-                      onChange={e => setFormData({ ...formData, fund_expenses: e.target.value })}
+                      value={formData.gp_subs}
+                      onChange={e => setFormData({ ...formData, gp_subs: e.target.value })}
                       placeholder="0"
                     />
                   </div>
                   <div className="form-group">
-                    <label className="form-label">Mgmt Fees</label>
+                    <label className="form-label">LP Subs</label>
                     <input
                       type="number"
                       step="any"
                       className="form-input"
-                      value={formData.mgmt_fees}
-                      onChange={e => setFormData({ ...formData, mgmt_fees: e.target.value })}
+                      value={formData.lp_subs}
+                      onChange={e => setFormData({ ...formData, lp_subs: e.target.value })}
                       placeholder="0"
                     />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Initial Value</label>
+                    <input
+                      type="number"
+                      step="any"
+                      className="form-input"
+                      value={formData.initial_value}
+                      onChange={e => setFormData({ ...formData, initial_value: e.target.value })}
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Ending Value *</label>
+                    <input
+                      type="number"
+                      step="any"
+                      className="form-input"
+                      value={formData.ending_value}
+                      onChange={e => setFormData({ ...formData, ending_value: e.target.value })}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <p style={{ fontSize: '13px', color: 'var(--text-blue)', marginBottom: '12px', fontWeight: '600' }}>
+                  Returns (%)
+                </p>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Motus</label>
+                    <input type="number" step="any" className="form-input" value={formData.motus_return}
+                      onChange={e => setFormData({ ...formData, motus_return: e.target.value })} placeholder="0" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">BTC</label>
+                    <input type="number" step="any" className="form-input" value={formData.btc_return}
+                      onChange={e => setFormData({ ...formData, btc_return: e.target.value })} placeholder="0" />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">ETH</label>
+                    <input type="number" step="any" className="form-input" value={formData.eth_return}
+                      onChange={e => setFormData({ ...formData, eth_return: e.target.value })} placeholder="0" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">CCI30</label>
+                    <input type="number" step="any" className="form-input" value={formData.cci30_return}
+                      onChange={e => setFormData({ ...formData, cci30_return: e.target.value })} placeholder="0" />
+                  </div>
+                </div>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">S&PexMEGA</label>
+                    <input type="number" step="any" className="form-input" value={formData.sp_ex_mega_return}
+                      onChange={e => setFormData({ ...formData, sp_ex_mega_return: e.target.value })} placeholder="0" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">SPX</label>
+                    <input type="number" step="any" className="form-input" value={formData.spx_return}
+                      onChange={e => setFormData({ ...formData, spx_return: e.target.value })} placeholder="0" />
+                  </div>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">QQQ</label>
+                  <input type="number" step="any" className="form-input" value={formData.qqq_return}
+                    onChange={e => setFormData({ ...formData, qqq_return: e.target.value })} placeholder="0" />
+                </div>
+                <p style={{ fontSize: '13px', color: 'var(--text-blue)', marginBottom: '12px', marginTop: '16px', fontWeight: '600' }}>
+                  Expenses
+                </p>
+                <div className="form-row">
+                  <div className="form-group">
+                    <label className="form-label">Fund Expenses</label>
+                    <input type="number" step="any" className="form-input" value={formData.fund_expenses}
+                      onChange={e => setFormData({ ...formData, fund_expenses: e.target.value })} placeholder="0" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Mgmt Fees</label>
+                    <input type="number" step="any" className="form-input" value={formData.mgmt_fees}
+                      onChange={e => setFormData({ ...formData, mgmt_fees: e.target.value })} placeholder="0" />
                   </div>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Setup Costs</label>
-                  <input
-                    type="number"
-                    step="any"
-                    className="form-input"
-                    value={formData.setup_costs}
-                    onChange={e => setFormData({ ...formData, setup_costs: e.target.value })}
-                    placeholder="0"
-                  />
+                  <input type="number" step="any" className="form-input" value={formData.setup_costs}
+                    onChange={e => setFormData({ ...formData, setup_costs: e.target.value })} placeholder="0" />
                 </div>
               </div>
               <div className="modal-footer">
@@ -980,7 +1430,9 @@ function PerfTrackerTab({ perfTracker, investors, onRefresh }) {
   );
 }
 
-// Investors Tab Component
+// ============================================================
+// Investors Tab Component (unchanged)
+// ============================================================
 function InvestorsTab({ investors, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingInvestor, setEditingInvestor] = useState(null);
@@ -1226,7 +1678,10 @@ function InvestorsTab({ investors, onRefresh }) {
   );
 }
 
+// ============================================================
 // Exits Tab Component
+// - Shows TOKEN and COST columns
+// ============================================================
 function ExitsTab({ exits, onRefresh }) {
   const [showModal, setShowModal] = useState(false);
   const [editingExit, setEditingExit] = useState(null);
@@ -1238,8 +1693,6 @@ function ExitsTab({ exits, onRefresh }) {
 
   // Calculate totals
   const totalCostBasis = exits.reduce((sum, e) => sum + e.cost_basis, 0);
-  const profitableExits = exits.filter(e => e.cost_basis > 0).length;
-  const unprofitableExits = exits.filter(e => e.cost_basis < 0).length;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -1296,18 +1749,14 @@ function ExitsTab({ exits, onRefresh }) {
       {/* Summary Cards */}
       <div className="portfolio-summary">
         <div className="summary-card">
-          <div className={`summary-card-value ${totalCostBasis >= 0 ? 'positive' : 'negative'}`}>
+          <div className={`summary-card-value ${totalCostBasis >= 0 ? 'negative' : 'positive'}`}>
             {formatCurrency(totalCostBasis, 0)}
           </div>
-          <div className="summary-card-label">Total P&L from Exits</div>
+          <div className="summary-card-label">Total Exits Cost</div>
         </div>
         <div className="summary-card">
-          <div className="summary-card-value positive">{profitableExits}</div>
-          <div className="summary-card-label">Profitable Exits</div>
-        </div>
-        <div className="summary-card">
-          <div className="summary-card-value negative">{unprofitableExits}</div>
-          <div className="summary-card-label">Unprofitable Exits</div>
+          <div className="summary-card-value">{exits.length}</div>
+          <div className="summary-card-label">Exited Positions</div>
         </div>
       </div>
 
@@ -1334,27 +1783,23 @@ function ExitsTab({ exits, onRefresh }) {
             <thead>
               <tr>
                 <th>Token</th>
-                <th className="right">Cost Basis / P&L</th>
-                <th>Exit Date</th>
+                <th className="right">Cost</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {exits.length === 0 ? (
                 <tr>
-                  <td colSpan="4" className="empty-state">
+                  <td colSpan="3" className="empty-state">
                     <div className="empty-state-title">No exits yet</div>
-                    <div>Exited positions will appear here</div>
+                    <div>Upload exits via the Upload tab or click "Add Exit"</div>
                   </td>
                 </tr>
               ) : (
                 exits.map(exit => (
                   <tr key={exit.id}>
                     <td className="token-name">{exit.token}</td>
-                    <td className={`right ${exit.cost_basis >= 0 ? 'positive' : 'negative'}`}>
-                      {formatCurrency(exit.cost_basis)}
-                    </td>
-                    <td>{exit.exit_date || '-'}</td>
+                    <td className="right">{formatCurrency(exit.cost_basis)}</td>
                     <td>
                       <div className="actions">
                         <button
@@ -1405,25 +1850,19 @@ function ExitsTab({ exits, onRefresh }) {
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Cost Basis / P&L *</label>
+                  <label className="form-label">Cost *</label>
                   <input
                     type="number"
                     step="any"
                     className="form-input"
                     value={formData.cost_basis}
                     onChange={e => setFormData({ ...formData, cost_basis: e.target.value })}
-                    placeholder="Positive for profit, negative for loss"
+                    placeholder="Cost basis for the exited position"
                     required
                   />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Exit Date</label>
-                  <input
-                    type="date"
-                    className="form-input"
-                    value={formData.exit_date}
-                    onChange={e => setFormData({ ...formData, exit_date: e.target.value })}
-                  />
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Positive cost = negative P&L impact on USDC balance
+                  </p>
                 </div>
               </div>
               <div className="modal-footer">
@@ -1446,7 +1885,9 @@ function ExitsTab({ exits, onRefresh }) {
   );
 }
 
-// Sector Watch Tab Component
+// ============================================================
+// Sector Watch Tab Component (unchanged)
+// ============================================================
 function SectorWatchTab({ prices, onRefresh }) {
   const tokenList = Object.entries(prices).map(([symbol, data]) => ({
     symbol,
@@ -1492,17 +1933,17 @@ function SectorWatchTab({ prices, onRefresh }) {
                     <td className="right">{formatPrice(token.price)}</td>
                     <td className="right">
                       <span className={`perf-cell ${getPerformanceClass(token.percent_change_24h)}`}>
-                        {formatPercent(token.percent_change_24h)}
+                        {token.percent_change_24h != null ? formatPercent(token.percent_change_24h) : '-'}
                       </span>
                     </td>
                     <td className="right">
                       <span className={`perf-cell ${getPerformanceClass(token.percent_change_7d)}`}>
-                        {formatPercent(token.percent_change_7d)}
+                        {token.percent_change_7d != null ? formatPercent(token.percent_change_7d) : '-'}
                       </span>
                     </td>
                     <td className="right">
                       <span className={`perf-cell ${getPerformanceClass(token.percent_change_30d)}`}>
-                        {formatPercent(token.percent_change_30d)}
+                        {token.percent_change_30d != null ? formatPercent(token.percent_change_30d) : '-'}
                       </span>
                     </td>
                     <td className="right">{formatCurrency(token.market_cap, 0)}</td>
@@ -1518,7 +1959,11 @@ function SectorWatchTab({ prices, onRefresh }) {
   );
 }
 
+// ============================================================
 // Upload Tab Component
+// - Added Perf Tracker and Exits upload types
+// - Clear buttons for all data types
+// ============================================================
 function UploadTab({ onRefresh }) {
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState(null);
@@ -1550,7 +1995,13 @@ function UploadTab({ onRefresh }) {
     formData.append('file', file);
 
     try {
-      const endpoint = uploadType === 'trades' ? '/upload/trades' : '/upload/investors';
+      const endpointMap = {
+        trades: '/upload/trades',
+        investors: '/upload/investors',
+        'perf-tracker': '/upload/perf-tracker',
+        exits: '/upload/exits'
+      };
+      const endpoint = endpointMap[uploadType] || '/upload/trades';
       const res = await axios.post(`${API_BASE}${endpoint}`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
@@ -1569,14 +2020,24 @@ function UploadTab({ onRefresh }) {
   };
 
   const handleClearData = async (type) => {
-    const confirmMsg = type === 'trades'
-      ? 'Are you sure you want to delete ALL trades? This cannot be undone.'
-      : 'Are you sure you want to delete ALL investor records? This cannot be undone.';
+    const labels = {
+      trades: 'ALL trades',
+      investors: 'ALL investor records',
+      'perf-tracker': 'ALL performance tracker records',
+      exits: 'ALL exit records'
+    };
+    const confirmMsg = `Are you sure you want to delete ${labels[type]}? This cannot be undone.`;
 
     if (!window.confirm(confirmMsg)) return;
 
     try {
-      const endpoint = type === 'trades' ? '/trades/all' : '/investors/all';
+      const endpointMap = {
+        trades: '/trades/all',
+        investors: '/investors/all',
+        'perf-tracker': '/perf-tracker/all',
+        exits: '/exits/all'
+      };
+      const endpoint = endpointMap[type];
       await axios.delete(`${API_BASE}${endpoint}`);
       setResult({ success: true, message: `All ${type} deleted successfully` });
       fetchStats();
@@ -1588,6 +2049,31 @@ function UploadTab({ onRefresh }) {
       });
     }
   };
+
+  const uploadDescriptions = {
+    trades: {
+      title: 'Expected Excel columns for Trades:',
+      columns: 'Token, Date, Units, Avg. Price, Total Bot, Fee, App, Buy/Sell/Income',
+      note: 'Note: Fee and App columns will be ignored. Either Avg. Price or Total Bot is required (the other will be calculated).'
+    },
+    investors: {
+      title: 'Expected Excel columns for Investors:',
+      columns: 'Month, Client, GP / LP, Amount',
+      note: 'Note: Month format should be "June-22" or "2022-06". Use negative amounts for redemptions.'
+    },
+    'perf-tracker': {
+      title: 'Expected Excel columns for Perf Tracker:',
+      columns: 'MONTH, GP SUBS, LP SUBS, INITIAL VALUE, END/LIVE VALUE, MOTUS, GROSS RETURN (ignored), BTC, ETH, CCI30, S&PexMEGA, SPX, QQQ',
+      note: 'Note: GROSS RETURN column will be ignored. Month format should be "June-22" or "2022-06". Return values should be percentages (e.g., 5.2 for 5.2%).'
+    },
+    exits: {
+      title: 'Expected Excel columns for Exits:',
+      columns: 'TOKEN, COST',
+      note: 'Note: Positive cost = negative P&L impact, reducing USDC balance.'
+    }
+  };
+
+  const desc = uploadDescriptions[uploadType];
 
   return (
     <div>
@@ -1626,47 +2112,35 @@ function UploadTab({ onRefresh }) {
             <select
               className="form-select"
               value={uploadType}
-              onChange={(e) => setUploadType(e.target.value)}
+              onChange={(e) => { setUploadType(e.target.value); setResult(null); }}
               style={{ maxWidth: '300px' }}
             >
               <option value="trades">Trades</option>
               <option value="investors">Investors</option>
+              <option value="perf-tracker">Perf Tracker</option>
+              <option value="exits">Exits</option>
             </select>
           </div>
 
-          {uploadType === 'trades' && (
+          {desc && (
             <div style={{ marginBottom: '16px', padding: '16px', background: 'var(--bg-dark)', borderRadius: '8px' }}>
               <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                <strong>Expected Excel columns for Trades:</strong>
+                <strong>{desc.title}</strong>
               </p>
               <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                Token, Date, Units, Avg. Price, Total Bot, Fee, App, Buy/Sell/Income
+                {desc.columns}
               </p>
               <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
-                Note: Fee and App columns will be ignored. Either Avg. Price or Total Bot is required (the other will be calculated).
-              </p>
-            </div>
-          )}
-
-          {uploadType === 'investors' && (
-            <div style={{ marginBottom: '16px', padding: '16px', background: 'var(--bg-dark)', borderRadius: '8px' }}>
-              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                <strong>Expected Excel columns for Investors:</strong>
-              </p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                Month, Client, GP / LP, Amount
-              </p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
-                Note: Month format should be "June-22" or "2022-06". Use negative amounts for redemptions.
+                {desc.note}
               </p>
             </div>
           )}
 
           <div className="form-group">
-            <label className="form-label">Select Excel File (.xlsx, .xls, .csv)</label>
+            <label className="form-label">Select Excel File (.xlsx, .xls, .xlsm, .csv)</label>
             <input
               type="file"
-              accept=".xlsx,.xls,.csv"
+              accept=".xlsx,.xls,.xlsm,.csv"
               onChange={handleFileUpload}
               disabled={uploading}
               className="form-input"
@@ -1758,7 +2232,7 @@ function UploadTab({ onRefresh }) {
           <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>
             Use these options to clear data before re-importing. This action cannot be undone.
           </p>
-          <div style={{ display: 'flex', gap: '12px' }}>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             <button
               className="btn btn-danger"
               onClick={() => handleClearData('trades')}
@@ -1771,6 +2245,18 @@ function UploadTab({ onRefresh }) {
             >
               Clear All Investors
             </button>
+            <button
+              className="btn btn-danger"
+              onClick={() => handleClearData('perf-tracker')}
+            >
+              Clear All Perf Tracker
+            </button>
+            <button
+              className="btn btn-danger"
+              onClick={() => handleClearData('exits')}
+            >
+              Clear All Exits
+            </button>
           </div>
         </div>
       </div>
@@ -1778,7 +2264,10 @@ function UploadTab({ onRefresh }) {
   );
 }
 
+// ============================================================
 // Checker Tab Component - Debug calculations
+// - Updated USDC breakdown to show exits cost basis
+// ============================================================
 function CheckerTab({ prices }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1845,12 +2334,12 @@ function CheckerTab({ prices }) {
             <div>
               <h3 style={{ color: 'var(--text-blue)', marginBottom: '12px' }}>Holdings Value</h3>
               <p style={{ fontSize: '24px', fontWeight: '700' }}>{formatCurrency(totalPortfolioValue - data.calculations.usdc_balance, 2)}</p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Sum of (units × current price) for all tokens</p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Sum of (units x current price) for all tokens</p>
             </div>
             <div>
               <h3 style={{ color: 'var(--text-blue)', marginBottom: '12px' }}>USDC Balance</h3>
               <p style={{ fontSize: '24px', fontWeight: '700' }}>{formatCurrency(data.calculations.usdc_balance, 2)}</p>
-              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>= Subscriptions - Cost Basis - Expenses</p>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>= Subscriptions - Cost Basis - Expenses - Exits</p>
             </div>
             <div>
               <h3 style={{ color: 'var(--positive)', marginBottom: '12px' }}>Total Portfolio Value</h3>
@@ -1900,6 +2389,10 @@ function CheckerTab({ prices }) {
               <tr>
                 <td style={{ padding: '8px 0', paddingLeft: '20px', color: 'var(--text-muted)' }}>Setup Costs</td>
                 <td style={{ textAlign: 'right', color: 'var(--text-muted)' }}>{formatCurrency(data.expenses.setup_costs, 2)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: '8px 0' }}>Minus: Exits Cost Basis</td>
+                <td style={{ textAlign: 'right', fontWeight: '600', color: 'var(--negative)' }}>-{formatCurrency(data.calculations.exits_cost_basis, 2)}</td>
               </tr>
               <tr style={{ borderTop: '2px solid var(--border-medium)' }}>
                 <td style={{ padding: '12px 0', fontWeight: '700', color: 'var(--text-blue)' }}>= USDC Balance</td>
@@ -2013,7 +2506,7 @@ function CheckerTab({ prices }) {
                   <tbody>
                     {tokenTrades.trades?.map((t, idx) => (
                       <tr key={idx}>
-                        <td>{t.date}</td>
+                        <td>{formatDate(t.date)}</td>
                         <td>
                           <span className={`badge badge-${t.type.toLowerCase()}`}>{t.type}</span>
                         </td>
@@ -2046,7 +2539,7 @@ function CheckerTab({ prices }) {
             {holdingsWithValues.filter(h => h.price === 0 && h.net_units > 0).length > 0 && (
               <li style={{ marginBottom: '8px', color: 'var(--warning)' }}>
                 <strong>Holdings with no price data:</strong> {holdingsWithValues.filter(h => h.price === 0 && h.net_units > 0).map(h => h.token).join(', ')}
-                <br /><span style={{ fontSize: '12px' }}>These tokens have no price from CoinMarketCap API.</span>
+                <br /><span style={{ fontSize: '12px' }}>These tokens have no price from CoinMarketCap API. Set a manual price on the Portfolio tab.</span>
               </li>
             )}
             {data.calculations.usdc_balance < 0 && (

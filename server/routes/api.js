@@ -121,7 +121,7 @@ router.get('/trades', (req, res) => {
 router.post('/trades', (req, res) => {
   try {
     const db = getDb();
-    const { date, token, units, avg_price, total, type } = req.body;
+    const { date, token, units, avg_price, total, type, notes } = req.body;
 
     // Calculate missing field
     let finalAvgPrice = avg_price;
@@ -134,11 +134,11 @@ router.post('/trades', (req, res) => {
     }
 
     const stmt = db.prepare(`
-      INSERT INTO trades (date, token, units, avg_price, total, type)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO trades (date, token, units, avg_price, total, type, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(date, token.toUpperCase(), units, finalAvgPrice, finalTotal, type);
+    const result = stmt.run(date, token.toUpperCase(), units, finalAvgPrice, finalTotal, type, notes || null);
 
     const newTrade = db.prepare('SELECT * FROM trades WHERE id = ?').get(result.lastInsertRowid);
     res.json(newTrade);
@@ -150,7 +150,7 @@ router.post('/trades', (req, res) => {
 router.put('/trades/:id', (req, res) => {
   try {
     const db = getDb();
-    const { date, token, units, avg_price, total, type } = req.body;
+    const { date, token, units, avg_price, total, type, notes } = req.body;
 
     let finalAvgPrice = avg_price;
     let finalTotal = total;
@@ -163,11 +163,11 @@ router.put('/trades/:id', (req, res) => {
 
     const stmt = db.prepare(`
       UPDATE trades
-      SET date = ?, token = ?, units = ?, avg_price = ?, total = ?, type = ?, updated_at = CURRENT_TIMESTAMP
+      SET date = ?, token = ?, units = ?, avg_price = ?, total = ?, type = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
 
-    stmt.run(date, token.toUpperCase(), units, finalAvgPrice, finalTotal, type, req.params.id);
+    stmt.run(date, token.toUpperCase(), units, finalAvgPrice, finalTotal, type, notes || null, req.params.id);
 
     const updatedTrade = db.prepare('SELECT * FROM trades WHERE id = ?').get(req.params.id);
     res.json(updatedTrade);
@@ -181,6 +181,28 @@ router.delete('/trades/:id', (req, res) => {
     const db = getDb();
     db.prepare('DELETE FROM trades WHERE id = ?').run(req.params.id);
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Export trades as CSV
+router.get('/trades/export/csv', (req, res) => {
+  try {
+    const db = getDb();
+    const trades = db.prepare('SELECT * FROM trades ORDER BY date DESC, id DESC').all();
+
+    const headers = 'Date,Token,Units,Avg Price,Total,Type,Notes';
+    const rows = trades.map(t => {
+      const notes = t.notes ? `"${t.notes.replace(/"/g, '""')}"` : '';
+      return `${t.date},${t.token},${t.units},${t.avg_price || ''},${t.total || ''},${t.type},${notes}`;
+    });
+
+    const csv = [headers, ...rows].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=trades.csv');
+    res.send(csv);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -244,13 +266,19 @@ router.get('/portfolio/usdc', (req, res) => {
 
     const totalExpenses = (expenses.fund_expenses || 0) + (expenses.mgmt_fees || 0) + (expenses.setup_costs || 0);
 
-    // USDC = Total Subscriptions - Cost Basis of Holdings - Total Expenses
-    const usdcBalance = (subscriptions.total || 0) - (costBasis.total || 0) - totalExpenses;
+    // Get exits cost basis
+    const exitsCostBasis = db.prepare(`
+      SELECT COALESCE(SUM(cost_basis), 0) as total FROM exits
+    `).get();
+
+    // USDC = Total Subscriptions - Cost Basis of Holdings - Total Expenses - Exits Cost Basis
+    const usdcBalance = (subscriptions.total || 0) - (costBasis.total || 0) - totalExpenses - (exitsCostBasis.total || 0);
 
     res.json({
       total_subscriptions: subscriptions.total || 0,
       cost_basis: costBasis.total || 0,
       total_expenses: totalExpenses,
+      exits_cost_basis: exitsCostBasis.total || 0,
       usdc_balance: usdcBalance
     });
   } catch (error) {
@@ -338,32 +366,36 @@ router.get('/perf-tracker', (req, res) => {
 router.post('/perf-tracker', (req, res) => {
   try {
     const db = getDb();
-    const { month, gp_subs, lp_subs, ending_value, fund_expenses, mgmt_fees, setup_costs,
-            btc_start, eth_start, spx_start, qqq_start, cci30_start, sp_ex_mega_start } = req.body;
+    const { month, gp_subs, lp_subs, initial_value, ending_value, motus_return,
+            btc_return, eth_return, cci30_return, sp_ex_mega_return, spx_return, qqq_return,
+            fund_expenses, mgmt_fees, setup_costs } = req.body;
 
     const stmt = db.prepare(`
-      INSERT INTO perf_tracker (month, gp_subs, lp_subs, ending_value, fund_expenses, mgmt_fees, setup_costs,
-                                btc_start, eth_start, spx_start, qqq_start, cci30_start, sp_ex_mega_start)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO perf_tracker (month, gp_subs, lp_subs, initial_value, ending_value, motus_return,
+                                btc_return, eth_return, cci30_return, sp_ex_mega_return, spx_return, qqq_return,
+                                fund_expenses, mgmt_fees, setup_costs)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(month) DO UPDATE SET
         gp_subs = excluded.gp_subs,
         lp_subs = excluded.lp_subs,
+        initial_value = excluded.initial_value,
         ending_value = excluded.ending_value,
+        motus_return = excluded.motus_return,
+        btc_return = excluded.btc_return,
+        eth_return = excluded.eth_return,
+        cci30_return = excluded.cci30_return,
+        sp_ex_mega_return = excluded.sp_ex_mega_return,
+        spx_return = excluded.spx_return,
+        qqq_return = excluded.qqq_return,
         fund_expenses = excluded.fund_expenses,
         mgmt_fees = excluded.mgmt_fees,
         setup_costs = excluded.setup_costs,
-        btc_start = excluded.btc_start,
-        eth_start = excluded.eth_start,
-        spx_start = excluded.spx_start,
-        qqq_start = excluded.qqq_start,
-        cci30_start = excluded.cci30_start,
-        sp_ex_mega_start = excluded.sp_ex_mega_start,
         updated_at = CURRENT_TIMESTAMP
     `);
 
-    stmt.run(month, gp_subs || 0, lp_subs || 0, ending_value || 0, fund_expenses || 0,
-             mgmt_fees || 0, setup_costs || 0, btc_start || 0, eth_start || 0,
-             spx_start || 0, qqq_start || 0, cci30_start || 0, sp_ex_mega_start || 0);
+    stmt.run(month, gp_subs || 0, lp_subs || 0, initial_value || 0, ending_value || 0, motus_return || 0,
+             btc_return || 0, eth_return || 0, cci30_return || 0, sp_ex_mega_return || 0, spx_return || 0, qqq_return || 0,
+             fund_expenses || 0, mgmt_fees || 0, setup_costs || 0);
 
     const record = db.prepare('SELECT * FROM perf_tracker WHERE month = ?').get(month);
     res.json(record);
@@ -375,20 +407,21 @@ router.post('/perf-tracker', (req, res) => {
 router.put('/perf-tracker/:id', (req, res) => {
   try {
     const db = getDb();
-    const { month, gp_subs, lp_subs, ending_value, fund_expenses, mgmt_fees, setup_costs,
-            btc_start, eth_start, spx_start, qqq_start, cci30_start, sp_ex_mega_start } = req.body;
+    const { month, gp_subs, lp_subs, initial_value, ending_value, motus_return,
+            btc_return, eth_return, cci30_return, sp_ex_mega_return, spx_return, qqq_return,
+            fund_expenses, mgmt_fees, setup_costs } = req.body;
 
     const stmt = db.prepare(`
       UPDATE perf_tracker
-      SET month = ?, gp_subs = ?, lp_subs = ?, ending_value = ?, fund_expenses = ?,
-          mgmt_fees = ?, setup_costs = ?, btc_start = ?, eth_start = ?, spx_start = ?,
-          qqq_start = ?, cci30_start = ?, sp_ex_mega_start = ?, updated_at = CURRENT_TIMESTAMP
+      SET month = ?, gp_subs = ?, lp_subs = ?, initial_value = ?, ending_value = ?, motus_return = ?,
+          btc_return = ?, eth_return = ?, cci30_return = ?, sp_ex_mega_return = ?, spx_return = ?, qqq_return = ?,
+          fund_expenses = ?, mgmt_fees = ?, setup_costs = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
 
-    stmt.run(month, gp_subs || 0, lp_subs || 0, ending_value || 0, fund_expenses || 0,
-             mgmt_fees || 0, setup_costs || 0, btc_start || 0, eth_start || 0,
-             spx_start || 0, qqq_start || 0, cci30_start || 0, sp_ex_mega_start || 0, req.params.id);
+    stmt.run(month, gp_subs || 0, lp_subs || 0, initial_value || 0, ending_value || 0, motus_return || 0,
+             btc_return || 0, eth_return || 0, cci30_return || 0, sp_ex_mega_return || 0, spx_return || 0, qqq_return || 0,
+             fund_expenses || 0, mgmt_fees || 0, setup_costs || 0, req.params.id);
 
     const updated = db.prepare('SELECT * FROM perf_tracker WHERE id = ?').get(req.params.id);
     res.json(updated);
@@ -402,6 +435,17 @@ router.delete('/perf-tracker/:id', (req, res) => {
     const db = getDb();
     db.prepare('DELETE FROM perf_tracker WHERE id = ?').run(req.params.id);
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear all perf tracker data (for re-importing)
+router.delete('/perf-tracker/all', (req, res) => {
+  try {
+    const db = getDb();
+    const result = db.prepare('DELETE FROM perf_tracker').run();
+    res.json({ success: true, deleted: result.changes });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -464,6 +508,63 @@ router.delete('/exits/:id', (req, res) => {
   try {
     const db = getDb();
     db.prepare('DELETE FROM exits WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear all exits (for re-importing)
+router.delete('/exits/all', (req, res) => {
+  try {
+    const db = getDb();
+    const result = db.prepare('DELETE FROM exits').run();
+    res.json({ success: true, deleted: result.changes });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =====================
+// MANUAL PRICES ENDPOINTS
+// =====================
+
+router.get('/manual-prices', (req, res) => {
+  try {
+    const db = getDb();
+    const prices = db.prepare('SELECT * FROM manual_prices ORDER BY token').all();
+    res.json(prices);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/manual-prices', (req, res) => {
+  try {
+    const db = getDb();
+    const { token, price } = req.body;
+
+    const stmt = db.prepare(`
+      INSERT INTO manual_prices (token, price, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(token) DO UPDATE SET
+        price = excluded.price,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+
+    stmt.run(token.toUpperCase(), price);
+
+    const record = db.prepare('SELECT * FROM manual_prices WHERE token = ?').get(token.toUpperCase());
+    res.json(record);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/manual-prices/:token', (req, res) => {
+  try {
+    const db = getDb();
+    db.prepare('DELETE FROM manual_prices WHERE token = ?').run(req.params.token.toUpperCase());
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -558,6 +659,14 @@ router.get('/summary', (req, res) => {
 function parseExcelDate(value) {
   if (!value) return null;
 
+  // Handle JavaScript Date objects (from xlsx with cellDates: true)
+  if (value instanceof Date) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
   // If it's already a string date
   if (typeof value === 'string') {
     // Try parsing common date formats
@@ -618,6 +727,30 @@ function getColumnValue(row, ...possibleNames) {
         return row[key];
       }
     }
+  }
+  return null;
+}
+
+// Helper function to parse month format like "June-22" to "2022-06"
+function parseMonthValue(value) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const monthStr = value.trim();
+    const monthMatch = monthStr.match(/^([A-Za-z]+)-(\d{2})$/);
+    if (monthMatch) {
+      const monthNames = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+      const monthIndex = monthNames.findIndex(m => monthMatch[1].toLowerCase().startsWith(m));
+      if (monthIndex !== -1) {
+        const year = parseInt(monthMatch[2]) + 2000;
+        return `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+      }
+    }
+    if (monthStr.match(/^\d{4}-\d{2}$/)) {
+      return monthStr;
+    }
+  }
+  if (value instanceof Date) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
   }
   return null;
 }
@@ -863,6 +996,175 @@ router.post('/upload/investors', upload.single('file'), (req, res) => {
   }
 });
 
+// Upload perf tracker data from Excel
+router.post('/upload/perf-tracker', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rawData = XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+    if (rawData.length === 0) {
+      return res.status(400).json({ error: 'No data found in the file' });
+    }
+
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO perf_tracker (month, gp_subs, lp_subs, initial_value, ending_value,
+                                motus_return, btc_return, eth_return, cci30_return,
+                                sp_ex_mega_return, spx_return, qqq_return)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(month) DO UPDATE SET
+        gp_subs = excluded.gp_subs,
+        lp_subs = excluded.lp_subs,
+        initial_value = excluded.initial_value,
+        ending_value = excluded.ending_value,
+        motus_return = excluded.motus_return,
+        btc_return = excluded.btc_return,
+        eth_return = excluded.eth_return,
+        cci30_return = excluded.cci30_return,
+        sp_ex_mega_return = excluded.sp_ex_mega_return,
+        spx_return = excluded.spx_return,
+        qqq_return = excluded.qqq_return,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+
+    let imported = 0;
+    let skipped = 0;
+    const errors = [];
+
+    const insertMany = db.transaction((rows) => {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        try {
+          const monthValue = getColumnValue(row, 'MONTH', 'Month', 'month');
+          const parsedMonth = parseMonthValue(monthValue);
+
+          if (!parsedMonth) {
+            skipped++;
+            continue;
+          }
+
+          const gpSubs = parseFloat(getColumnValue(row, 'GP SUBS', 'GP Subs', 'gp_subs') || 0);
+          const lpSubs = parseFloat(getColumnValue(row, 'LP SUBS', 'LP Subs', 'lp_subs') || 0);
+          const initialValue = parseFloat(getColumnValue(row, 'INITIAL VALUE', 'Initial Value', 'initial_value') || 0);
+          const endingValue = parseFloat(getColumnValue(row, 'END/LIVE VALUE', 'END VALUE', 'ENDING VALUE', 'Ending Value', 'ending_value', 'End/Live Value') || 0);
+          const motusReturn = parseFloat(getColumnValue(row, 'MOTUS', 'Motus', 'motus_return', 'Motus Return') || 0);
+          const btcReturn = parseFloat(getColumnValue(row, 'BTC', 'Btc', 'btc_return', 'BTC Return') || 0);
+          const ethReturn = parseFloat(getColumnValue(row, 'ETH', 'Eth', 'eth_return', 'ETH Return') || 0);
+          const cci30Return = parseFloat(getColumnValue(row, 'CCI30', 'Cci30', 'cci30_return', 'CCI30 Return') || 0);
+          const spExMegaReturn = parseFloat(getColumnValue(row, 'S&PexMEGA', 'S&P ex MEGA', 'sp_ex_mega_return', 'S&PexMega', 'SPexMEGA') || 0);
+          const spxReturn = parseFloat(getColumnValue(row, 'SPX', 'Spx', 'spx_return', 'SPX Return') || 0);
+          const qqqReturn = parseFloat(getColumnValue(row, 'QQQ', 'Qqq', 'qqq_return', 'QQQ Return') || 0);
+
+          stmt.run(parsedMonth,
+            isNaN(gpSubs) ? 0 : gpSubs,
+            isNaN(lpSubs) ? 0 : lpSubs,
+            isNaN(initialValue) ? 0 : initialValue,
+            isNaN(endingValue) ? 0 : endingValue,
+            isNaN(motusReturn) ? 0 : motusReturn,
+            isNaN(btcReturn) ? 0 : btcReturn,
+            isNaN(ethReturn) ? 0 : ethReturn,
+            isNaN(cci30Return) ? 0 : cci30Return,
+            isNaN(spExMegaReturn) ? 0 : spExMegaReturn,
+            isNaN(spxReturn) ? 0 : spxReturn,
+            isNaN(qqqReturn) ? 0 : qqqReturn
+          );
+          imported++;
+        } catch (rowError) {
+          errors.push(`Row ${i + 2}: ${rowError.message}`);
+          skipped++;
+        }
+      }
+    });
+
+    insertMany(rawData);
+
+    res.json({
+      success: true,
+      imported,
+      skipped,
+      total: rawData.length,
+      errors: errors.slice(0, 10)
+    });
+  } catch (error) {
+    console.error('Perf tracker upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Upload exits from Excel
+router.post('/upload/exits', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const rawData = XLSX.utils.sheet_to_json(sheet, { defval: null });
+
+    if (rawData.length === 0) {
+      return res.status(400).json({ error: 'No data found in the file' });
+    }
+
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO exits (token, cost_basis)
+      VALUES (?, ?)
+    `);
+
+    let imported = 0;
+    let skipped = 0;
+    const errors = [];
+
+    const insertMany = db.transaction((rows) => {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        try {
+          const token = getColumnValue(row, 'TOKEN', 'Token', 'token', 'SYMBOL', 'Symbol');
+          const costBasis = getColumnValue(row, 'COST', 'Cost', 'cost', 'COST BASIS', 'Cost Basis', 'cost_basis');
+
+          if (!token || String(token).trim() === '') {
+            skipped++;
+            continue;
+          }
+
+          const parsedCost = parseFloat(String(costBasis || 0).replace(/[$,]/g, ''));
+          if (isNaN(parsedCost)) {
+            skipped++;
+            continue;
+          }
+
+          stmt.run(String(token).toUpperCase().trim(), parsedCost);
+          imported++;
+        } catch (rowError) {
+          errors.push(`Row ${i + 2}: ${rowError.message}`);
+          skipped++;
+        }
+      }
+    });
+
+    insertMany(rawData);
+
+    res.json({
+      success: true,
+      imported,
+      skipped,
+      total: rawData.length,
+      errors: errors.slice(0, 10)
+    });
+  } catch (error) {
+    console.error('Exits upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Clear all trades (for re-importing)
 router.delete('/trades/all', (req, res) => {
   try {
@@ -956,8 +1258,13 @@ router.get('/checker/portfolio', (req, res) => {
       .filter(h => h.token.toUpperCase() !== 'USDC')
       .reduce((sum, h) => sum + (h.cost_basis || 0), 0);
 
+    // Get exits cost basis
+    const exitsCostBasis = db.prepare(`
+      SELECT COALESCE(SUM(cost_basis), 0) as total FROM exits
+    `).get();
+
     // USDC calculation
-    const usdcBalance = (investors.total_subscriptions || 0) - totalCostBasis - totalExpenses;
+    const usdcBalance = (investors.total_subscriptions || 0) - totalCostBasis - totalExpenses - (exitsCostBasis.total || 0);
 
     res.json({
       holdings,
@@ -968,10 +1275,12 @@ router.get('/checker/portfolio', (req, res) => {
         setup_costs: expenses.setup_costs || 0,
         total: totalExpenses
       },
+      exits_cost_basis: exitsCostBasis.total || 0,
       calculations: {
         total_subscriptions: investors.total_subscriptions || 0,
         total_cost_basis: totalCostBasis,
         total_expenses: totalExpenses,
+        exits_cost_basis: exitsCostBasis.total || 0,
         usdc_balance: usdcBalance
       }
     });
