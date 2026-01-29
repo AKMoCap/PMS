@@ -244,7 +244,9 @@ router.get('/portfolio/usdc', (req, res) => {
       SELECT COALESCE(SUM(amount), 0) as total FROM investors
     `).get();
 
-    // Get total cost basis of current holdings (excluding USDC)
+    // Get net capital deployed from trades (excluding USDC).
+    // Buy = cash out, Sell = cash back in. This covers both active AND exited positions
+    // since trades remain in the table after a position is exited.
     const costBasis = db.prepare(`
       SELECT COALESCE(SUM(
         CASE WHEN type = 'Buy' THEN total
@@ -266,19 +268,15 @@ router.get('/portfolio/usdc', (req, res) => {
 
     const totalExpenses = (expenses.fund_expenses || 0) + (expenses.mgmt_fees || 0) + (expenses.setup_costs || 0);
 
-    // Get exits cost basis
-    const exitsCostBasis = db.prepare(`
-      SELECT COALESCE(SUM(cost_basis), 0) as total FROM exits
-    `).get();
-
-    // USDC = Total Subscriptions - Cost Basis of Holdings - Total Expenses - Exits Cost Basis
-    const usdcBalance = (subscriptions.total || 0) - (costBasis.total || 0) - totalExpenses - (exitsCostBasis.total || 0);
+    // USDC = Total Subscriptions - Net Capital Deployed (from trades) - Total Expenses
+    // Note: exits_cost_basis is NOT subtracted here because trades for exited positions
+    // are still in the trades table, so their buy/sell impact is already in costBasis.
+    const usdcBalance = (subscriptions.total || 0) - (costBasis.total || 0) - totalExpenses;
 
     res.json({
       total_subscriptions: subscriptions.total || 0,
       cost_basis: costBasis.total || 0,
       total_expenses: totalExpenses,
-      exits_cost_basis: exitsCostBasis.total || 0,
       usdc_balance: usdcBalance
     });
   } catch (error) {
@@ -1020,6 +1018,51 @@ router.post('/upload/perf-tracker', upload.single('file'), (req, res) => {
       return res.status(400).json({ error: 'No data found in the file' });
     }
 
+    // Detect percentage-formatted columns from the raw sheet cells.
+    // Excel stores percentage values as decimals (e.g., -18.25% as -0.1825).
+    // We need to multiply by 100 for columns with percentage formatting.
+    const percentCols = new Set();
+    const ref = sheet['!ref'];
+    if (ref) {
+      const range = XLSX.utils.decode_range(ref);
+      const headers = {};
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        const hCell = sheet[XLSX.utils.encode_cell({ r: range.s.r, c: C })];
+        if (hCell) headers[C] = String(hCell.v != null ? hCell.v : (hCell.w || '')).trim();
+      }
+      for (let C = range.s.c; C <= range.e.c; C++) {
+        for (let R = range.s.r + 1; R <= Math.min(range.s.r + 5, range.e.r); R++) {
+          const cell = sheet[XLSX.utils.encode_cell({ r: R, c: C })];
+          if (cell && cell.z && typeof cell.z === 'string' && cell.z.includes('%')) {
+            percentCols.add(headers[C]);
+            break;
+          }
+        }
+      }
+    }
+
+    // Helper: parse a return value, applying *100 if the source column was percent-formatted
+    const parseReturnValue = (row, ...colNames) => {
+      const raw = getColumnValue(row, ...colNames);
+      const val = parseFloat(raw || 0);
+      if (isNaN(val)) return 0;
+      // Check if any matching column name is percentage-formatted
+      for (const name of colNames) {
+        if (percentCols.has(name)) return val * 100;
+      }
+      // Also check actual key that matched in the row (case-insensitive)
+      const rowKeys = Object.keys(row);
+      for (const name of colNames) {
+        const lower = name.toLowerCase().trim();
+        for (const key of rowKeys) {
+          if (key.toLowerCase().trim() === lower && percentCols.has(key)) {
+            return val * 100;
+          }
+        }
+      }
+      return val;
+    };
+
     const db = getDb();
 
     // perf_tracker uses upsert on month (UNIQUE), so duplicates are handled automatically
@@ -1065,26 +1108,26 @@ router.post('/upload/perf-tracker', upload.single('file'), (req, res) => {
           const lpSubs = parseFloat(getColumnValue(row, 'LP SUBS', 'LP Subs', 'lp_subs') || 0);
           const initialValue = parseFloat(getColumnValue(row, 'INITIAL VALUE', 'Initial Value', 'initial_value') || 0);
           const endingValue = parseFloat(getColumnValue(row, 'END/LIVE VALUE', 'END VALUE', 'ENDING VALUE', 'Ending Value', 'ending_value', 'End/Live Value') || 0);
-          const motusReturn = parseFloat(getColumnValue(row, 'MOTUS', 'Motus', 'motus_return', 'Motus Return') || 0);
-          const btcReturn = parseFloat(getColumnValue(row, 'BTC', 'Btc', 'btc_return', 'BTC Return') || 0);
-          const ethReturn = parseFloat(getColumnValue(row, 'ETH', 'Eth', 'eth_return', 'ETH Return') || 0);
-          const cci30Return = parseFloat(getColumnValue(row, 'CCI30', 'Cci30', 'cci30_return', 'CCI30 Return') || 0);
-          const spExMegaReturn = parseFloat(getColumnValue(row, 'S&PexMEGA', 'S&P ex MEGA', 'sp_ex_mega_return', 'S&PexMega', 'SPexMEGA') || 0);
-          const spxReturn = parseFloat(getColumnValue(row, 'SPX', 'Spx', 'spx_return', 'SPX Return') || 0);
-          const qqqReturn = parseFloat(getColumnValue(row, 'QQQ', 'Qqq', 'qqq_return', 'QQQ Return') || 0);
+          const motusReturn = parseReturnValue(row, 'MOTUS', 'Motus', 'motus_return', 'Motus Return');
+          const btcReturn = parseReturnValue(row, 'BTC', 'Btc', 'btc_return', 'BTC Return');
+          const ethReturn = parseReturnValue(row, 'ETH', 'Eth', 'eth_return', 'ETH Return');
+          const cci30Return = parseReturnValue(row, 'CCI30', 'Cci30', 'cci30_return', 'CCI30 Return');
+          const spExMegaReturn = parseReturnValue(row, 'S&PexMEGA', 'S&P ex MEGA', 'sp_ex_mega_return', 'S&PexMega', 'SPexMEGA');
+          const spxReturn = parseReturnValue(row, 'SPX', 'Spx', 'spx_return', 'SPX Return');
+          const qqqReturn = parseReturnValue(row, 'QQQ', 'Qqq', 'qqq_return', 'QQQ Return');
 
           stmt.run(parsedMonth,
             isNaN(gpSubs) ? 0 : gpSubs,
             isNaN(lpSubs) ? 0 : lpSubs,
             isNaN(initialValue) ? 0 : initialValue,
             isNaN(endingValue) ? 0 : endingValue,
-            isNaN(motusReturn) ? 0 : motusReturn,
-            isNaN(btcReturn) ? 0 : btcReturn,
-            isNaN(ethReturn) ? 0 : ethReturn,
-            isNaN(cci30Return) ? 0 : cci30Return,
-            isNaN(spExMegaReturn) ? 0 : spExMegaReturn,
-            isNaN(spxReturn) ? 0 : spxReturn,
-            isNaN(qqqReturn) ? 0 : qqqReturn
+            motusReturn,
+            btcReturn,
+            ethReturn,
+            cci30Return,
+            spExMegaReturn,
+            spxReturn,
+            qqqReturn
           );
           imported++;
         } catch (rowError) {
@@ -1269,18 +1312,17 @@ router.get('/checker/portfolio', (req, res) => {
 
     const totalExpenses = (expenses.fund_expenses || 0) + (expenses.mgmt_fees || 0) + (expenses.setup_costs || 0);
 
-    // Calculate total cost basis (excluding USDC)
+    // Calculate total cost basis (excluding USDC).
+    // This represents net capital deployed: buy costs minus sell proceeds.
+    // Covers both active and exited positions since trades remain in the table.
     const totalCostBasis = holdings
       .filter(h => h.token.toUpperCase() !== 'USDC')
       .reduce((sum, h) => sum + (h.cost_basis || 0), 0);
 
-    // Get exits cost basis
-    const exitsCostBasis = db.prepare(`
-      SELECT COALESCE(SUM(cost_basis), 0) as total FROM exits
-    `).get();
-
-    // USDC calculation
-    const usdcBalance = (investors.total_subscriptions || 0) - totalCostBasis - totalExpenses - (exitsCostBasis.total || 0);
+    // USDC = Subscriptions - Net Capital Deployed - Expenses
+    // Note: exits_cost_basis is NOT subtracted because trades for exited positions
+    // are still in the trades table, so their buy/sell impact is already in totalCostBasis.
+    const usdcBalance = (investors.total_subscriptions || 0) - totalCostBasis - totalExpenses;
 
     res.json({
       holdings,
@@ -1291,12 +1333,10 @@ router.get('/checker/portfolio', (req, res) => {
         setup_costs: expenses.setup_costs || 0,
         total: totalExpenses
       },
-      exits_cost_basis: exitsCostBasis.total || 0,
       calculations: {
         total_subscriptions: investors.total_subscriptions || 0,
         total_cost_basis: totalCostBasis,
         total_expenses: totalExpenses,
-        exits_cost_basis: exitsCostBasis.total || 0,
         usdc_balance: usdcBalance
       }
     });
