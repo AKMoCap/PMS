@@ -216,14 +216,14 @@ router.get('/portfolio', (req, res) => {
   try {
     const db = getDb();
 
-    // Get aggregated holdings from trades
+    // Get aggregated holdings from trades (use UPPER for consistent grouping)
     const holdings = db.prepare(`
       SELECT
-        token,
+        UPPER(token) as token,
         SUM(CASE WHEN type = 'Buy' THEN units WHEN type = 'Sell' THEN -units WHEN type = 'Income' THEN units ELSE 0 END) as total_units,
         SUM(CASE WHEN type = 'Buy' THEN total WHEN type = 'Sell' THEN -total ELSE 0 END) as cost_basis
       FROM trades
-      GROUP BY token
+      GROUP BY UPPER(token)
       HAVING total_units > 0.0001 OR total_units < -0.0001
       ORDER BY cost_basis DESC
     `).all();
@@ -783,6 +783,10 @@ router.post('/upload/trades', upload.single('file'), (req, res) => {
     }
 
     const db = getDb();
+
+    // Clear existing trades before importing (overwrite old data)
+    db.prepare('DELETE FROM trades').run();
+
     const stmt = db.prepare(`
       INSERT INTO trades (date, token, units, avg_price, total, type)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -916,6 +920,10 @@ router.post('/upload/investors', upload.single('file'), (req, res) => {
     }
 
     const db = getDb();
+
+    // Clear existing investors before importing (overwrite old data)
+    db.prepare('DELETE FROM investors').run();
+
     const stmt = db.prepare(`
       INSERT INTO investors (month, client, type, amount)
       VALUES (?, ?, ?, ?)
@@ -1013,6 +1021,10 @@ router.post('/upload/perf-tracker', upload.single('file'), (req, res) => {
     }
 
     const db = getDb();
+
+    // perf_tracker uses upsert on month (UNIQUE), so duplicates are handled automatically
+    // Do NOT clear perf_tracker here to preserve manually-entered expense data
+
     const stmt = db.prepare(`
       INSERT INTO perf_tracker (month, gp_subs, lp_subs, initial_value, ending_value,
                                 motus_return, btc_return, eth_return, cci30_return,
@@ -1114,6 +1126,10 @@ router.post('/upload/exits', upload.single('file'), (req, res) => {
     }
 
     const db = getDb();
+
+    // Clear existing exits before importing (overwrite old data)
+    db.prepare('DELETE FROM exits').run();
+
     const stmt = db.prepare(`
       INSERT INTO exits (token, cost_basis)
       VALUES (?, ?)
@@ -1216,10 +1232,10 @@ router.get('/checker/portfolio', (req, res) => {
   try {
     const db = getDb();
 
-    // Get detailed holdings with buy/sell/income breakdown
+    // Get detailed holdings with buy/sell/income breakdown (use UPPER for consistent grouping)
     const holdings = db.prepare(`
       SELECT
-        token,
+        UPPER(token) as token,
         SUM(CASE WHEN type = 'Buy' THEN units ELSE 0 END) as buy_units,
         SUM(CASE WHEN type = 'Sell' THEN units ELSE 0 END) as sell_units,
         SUM(CASE WHEN type = 'Income' THEN units ELSE 0 END) as income_units,
@@ -1229,8 +1245,8 @@ router.get('/checker/portfolio', (req, res) => {
         SUM(CASE WHEN type = 'Buy' THEN total WHEN type = 'Sell' THEN -total ELSE 0 END) as cost_basis,
         COUNT(*) as trade_count
       FROM trades
-      GROUP BY token
-      ORDER BY token
+      GROUP BY UPPER(token)
+      ORDER BY UPPER(token)
     `).all();
 
     // Get investor totals
