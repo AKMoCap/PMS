@@ -60,7 +60,7 @@ const formatDate = (dateStr) => {
   return dateStr;
 };
 
-function App() {
+function AppContent() {
   const [activeTab, setActiveTab] = useState('portfolio');
   const [prices, setPrices] = useState({});
   const [trades, setTrades] = useState([]);
@@ -2799,6 +2799,48 @@ function CheckerTab({ prices }) {
       </div>
     </div>
   );
+}
+
+function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(() => sessionStorage.getItem('pms_auth') === 'true');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    if (loginPassword === 'Motus2026!') {
+      sessionStorage.setItem('pms_auth', 'true');
+      setIsAuthenticated(true);
+      setLoginError('');
+    } else {
+      setLoginError('Incorrect password');
+    }
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="login-page">
+        <div className="login-card">
+          <h1 className="login-title">MOTUS</h1>
+          <p className="login-subtitle">Portfolio Management System</p>
+          <form onSubmit={handleLogin}>
+            <input
+              type="password"
+              className="login-input"
+              placeholder="Enter password"
+              value={loginPassword}
+              onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }}
+              autoFocus
+            />
+            {loginError && <div className="login-error">{loginError}</div>}
+            <button type="submit" className="login-btn">Enter</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return <AppContent />;
 }
 
 export default App;
